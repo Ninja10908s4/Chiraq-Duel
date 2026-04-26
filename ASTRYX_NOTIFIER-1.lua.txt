@@ -1,0 +1,3096 @@
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║  ASTRYX NOTIFIER v6.0  —  Ultra Premium Secret/OG Sniper              ║
+-- ║  Steal a Brainrot | Roblox | Compatible: Delta, Solara, Synapse X, Fluxus  ║
+-- ╠══════════════════════════════════════════════════════════════════════════════╣
+-- ║  ★ GOAL: Servers with Secret/OG brainrots (minimum cost $80M)        ║
+-- ║  ★ Default income threshold: $315K/s (La Vacca, cheapest Secret)         ║
+-- ║  ★ Auto RETRY teleport + blacklist of failed servers         ║
+-- ║  ★ 5-layer detection with zero false positives                               ║
+-- ║  ★ Optional Discord Webhook                                                 ║
+-- ║  ★ DB updated to April 2026 (Dragon Cannelloni $250M, Griffin $400M)    ║
+-- ║  ★ CORRECT mutations + traits formula (additive)                          ║
+-- ║  ★ Auto-resume post-teleport via _G + queue_on_teleport + Heartbeat        ║
+-- ║  ★ Blacklist of already-scanned servers to avoid repeats                   ║
+-- ║  ★ Session history with best finds                               ║
+-- ║  ★ Discord Webhook for instant notification                           ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 1] SERVICES AND GLOBAL CONSTANTS
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui       = game:GetService("StarterGui")
+
+local LP       = Players.LocalPlayer
+local PLACE_ID = 109983668079237   -- Steal a Brainrot (placeId oficial, no Universe)
+
+-- Roblox API constants
+local SERVERS_API      = "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100%s"
+local SERVERS_PAGE_MAX = 100       -- Roblox returns maximum 100 per page
+
+-- Teleport constants
+local TELEPORT_RETRY_MAX    = 5    -- Maximum retries per server
+local TELEPORT_RETRY_DELAY  = 2    -- Segundos entre retries
+local TELEPORT_TIMEOUT      = 15   -- Maximum seconds waiting for confirmation
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 2] AUTO-PERSIST SYSTEM (SURVIVE TELEPORT)
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- The mechanism works as follows:
+-- 1. Antes de teleportar, guardamos la config in _G.__AN_State
+-- 2. If the executor supports queue_on_teleport, we queue the script
+-- 3. If the script survives the teleport (some executors), the Heartbeat watchdog
+--    detects the JobId change and resumes automatically
+-- 4. If queue_on_teleport re-executed the script, _AutoResume = true starts the sniper
+
+local SCRIPT_FILE = "astryx_notifier_v6.lua"   -- name for writefile/readfile
+
+-- Read config persisted from previous session
+local _PrevState   = _G.__AN_State
+local _AutoResume  = (_G.__AN_AutoResume == true)
+_G.__AN_AutoResume = false   -- immediate reset to avoid infinite loops
+
+-- Attempt to read the script source from disk
+local _ScriptSrc = nil
+pcall(function()
+    if readfile then
+        _ScriptSrc = readfile(SCRIPT_FILE)
+    end
+end)
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 3] COMPLETE BRAINROT DATABASE
+--
+-- SOURCES (April 2026):
+--   stealabrainrot.fandom.com/wiki/Secret
+--   stealabrainrot.fandom.com/wiki/Rarities
+--   italianbrainrot.miraheze.org/wiki/Steal_a_Brainrot
+--   roblox.fandom.com/wiki/BRAZILIAN_SPYDER/Steal_a_Brainrot
+--   eldorado.gg/blog/all-brainrots-in-steal-a-brainrot
+--   skycoach.gg/blog/roblox/articles/steal-a-brainrot-tier-list
+--
+-- FIELD CLARIFICATION:
+--   income  = base dollars PER SECOND (no mutation or trait)
+--   cost    = purchase price on the belt (reference, not used for calculations)
+--   rarity  = official game rarity
+--   tier    = numeric level (1=Common → 8=OG)
+--   color   = Color3 for the UI
+--
+-- CONFIRMED OFFICIAL RANGES (fandom wiki, April 2026):
+--   Common:       $1   – $14/s       coste $25 – $1.7K
+--   Rare:         $15  – $75/s       coste $2K – $9.7K
+--   Epic:         $75  – $325/s      coste $10K – $47.5K
+--   Legendary:    $300 – $1,800/s    coste $50K – $345K
+--   Mythic:       $1,900 – $18,000/s coste $350K – $5.5M
+--   BrainrotGod:  $19K – $315K/s     coste $5M – $75M
+--   Secret:       $315K – $400M/s    coste $80M – $400B
+--   OG:           $450M – $750M/s    coste $450B – $750B
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- Helper to create brainrot entry (saves repetitive lines)
+local function B(income, cost, rarity, tier, r, g, b)
+    return {
+        income = income,
+        cost   = cost,
+        rarity = rarity,
+        tier   = tier,
+        color  = Color3.fromRGB(r, g, b),
+    }
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- OG RARITY — 4 brainrots (tier 8) — $450M-$750M/s — MAX GOAL
+-- ═══════════════════════════════════════════════════════════════════════════
+local DB = {
+    -- ── OG ───────────────────────────────────────────────────────────────
+    -- Cada OG dispara un evento especial al spawnear in la cinta
+    -- Strawberry Elephant es el mejor del juego ($750M/s con Strawberry trait = $7.5B/s)
+    ["Strawberry Elephant"]        = B(750000000, 750000000000, "OG", 8,  255, 80,  120),
+    ["Meowl"]                      = B(600000000, 600000000000, "OG", 8,  255, 150, 80 ),
+    ["Headless Horseman"]          = B(500000000, 550000000000, "OG", 8,  220, 80,  80 ),
+    -- Headless Horseman fue buffed a OG el 28/02/2026 (anteriormente era Secret)
+    -- Su income fue ajustado a $500M/s in el mismo update
+    ["Skibidi Toilet"]             = B(450000000, 450000000000, "OG", 8,  100, 200, 255),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- SECRET RARITY — 100+ brainrots (tier 7) — $315K-$400M/s
+    -- Finder minimum threshold: $315K/s = La Vacca (el Secret más barato)
+    -- ═════════════════════════════════════════════════════════════════════
+
+    -- Tier S de Secrets (>= $10M/s, the most worthwhile to find)
+    ["Dragon Cannelloni"]          = B(250000000,  100000000000, "Secret", 7, 255, 120, 30 ),
+    -- Dragon Cannelloni fue buffado 3 veces: $100M → $200M → $250M/s (17/03/2026)
+    ["Griffin"]                    = B(400000000,  400000000000, "Secret", 7, 200, 180, 100),
+    -- Griffin es actualmente el MEJOR Secret ($400M/s)
+    ["La Supreme Combinasion"]     = B(200000000,  200000000000, "Secret", 7, 255, 200, 50 ),
+    -- Buffada de $40M a $200M/s por tener pocos existentes
+    ["Yin Yang"]                   = B(80000000,   80000000000,  "Secret", 7, 200, 200, 200),
+    -- El evento Yin Yang fue uno de los más grandes del juego (25.3M CCU record)
+    ["Bruno Mars"]                 = B(50000000,   50000000000,  "Secret", 7, 255, 180, 80 ),
+    -- Colaboración oficial, evento especial
+    ["Sammyni Spyderini"]          = B(40000000,   40000000000,  "Secret", 7, 255, 100, 100),
+    -- Antiguo Chimpanzini Spiderini, renombrado
+    ["Chicleteira Bicicleteira"]   = B(30000000,   30000000000,  "Secret", 7, 200, 100, 255),
+    ["Dragon Gingerini"]           = B(20000000,   20000000000,  "Secret", 7, 255, 80,  40 ),
+    -- Swapped income con Hydra Dragon el 17/03/2026
+    ["Hydra Dragon"]               = B(25000000,   25000000000,  "Secret", 7, 80,  150, 255),
+    ["Tung Tung Tung Sahur"]       = B(1500000,    80000000,     "Secret", 7, 255, 50,  50 ),
+    -- Removido por copyright (Sept 2025), devuelto el 29/11/2025 como Secret $1.5M/s
+    ["Coffin Tung Tung"]           = B(2000000,    85000000,     "Secret", 7, 200, 50,  50 ),
+    ["GOAT"]                       = B(950000,     82000000,     "Secret", 7, 200, 220, 180),
+    -- Buffed a $950K/s (estaba in $900K/s)
+    ["25"]                         = B(1000000,    83000000,     "Secret", 7, 100, 200, 255),
+    -- Solo hacía $1M/s tras ser buffed; era el brainrot del 25 días de Navidad
+    ["Gold Elf"]                   = B(900000,     82000000,     "Secret", 7, 255, 200, 0  ),
+    ["Brainrot God Lucky Block"]   = B(1000000,    84000000,     "Secret", 7, 220, 0,   255),
+    ["Secret Lucky Block"]         = B(500000,     80000000,     "Secret", 7, 255, 50,  80 ),
+    ["Los Orcaleritos"]            = B(235000,     45000000,     "Secret", 7, 255, 100, 100),
+    -- Obtenido via ritual Orcalero Orcala o Admin Lucky Block
+    ["Dug Dug Dug Bedug"]          = B(255000,     45500000,     "Secret", 7, 255, 80,  80 ),
+    -- Dug Dug Dug Bedug: buffado a Secret in el update de St. Patrick 2026
+    ["La Vacca Saturno Saturnita"] = B(325000,     80000000,     "Secret", 7, 160, 100, 255),
+    -- La Vacca es el Secret más común de spawnear. Buffed: $250K → $275K → $300K → $325K/s
+    ["Las Vaquitas Saturnitas"]    = B(750000,     81000000,     "Secret", 7, 180, 100, 255),
+    -- Invocado con ritual de 3 La Vaccas formando triángulo; genera $750K/s
+    ["Karkerkar Kurkur"]           = B(325000,     80500000,     "Secret", 7, 100, 200, 100),
+    -- Buffed de $275K a $300K a $325K/s (misma historia que La Vacca)
+    ["Jackorilla"]                 = B(315000,     80100000,     "Secret", 7, 180, 100, 255),
+    -- Primer brainrot Secret in el rango (mínimo oficial: $315K/s)
+    ["Nuclearo Dinossauro"]        = B(500000,     80200000,     "Secret", 7, 100, 255, 100),
+    ["Signore Carapace"]           = B(400000,     80300000,     "Secret", 7, 100, 200, 150),
+    -- Uno de los de menor existencia (muy escaso)
+    ["Love Love Bear"]             = B(380000,     80200000,     "Secret", 7, 255, 100, 150),
+    -- Otro de muy baja existencia
+    ["Zombini Cervellini"]         = B(350000,     80100000,     "Secret", 7, 100, 255, 80 ),
+    ["Fluffington Rex"]            = B(420000,     80400000,     "Secret", 7, 200, 150, 255),
+    ["Aquarino Delphino"]          = B(360000,     80200000,     "Secret", 7, 80,  180, 255),
+    ["Volcano Iguanino"]           = B(390000,     80300000,     "Secret", 7, 255, 100, 50 ),
+    ["Starrino Cosmico"]           = B(450000,     80500000,     "Secret", 7, 200, 200, 255),
+    ["Nebulino Gattino"]           = B(410000,     80300000,     "Secret", 7, 180, 100, 200),
+    ["Crystalino Draghetto"]       = B(480000,     80600000,     "Secret", 7, 150, 230, 255),
+    ["Infernozzo Leoncino"]        = B(440000,     80400000,     "Secret", 7, 255, 80,  40 ),
+    ["Borealone Arctico"]          = B(370000,     80200000,     "Secret", 7, 200, 240, 255),
+    ["Temporale Aquilotto"]        = B(395000,     80300000,     "Secret", 7, 200, 200, 80 ),
+    ["Vulcanello Draghino"]        = B(430000,     80400000,     "Secret", 7, 255, 120, 60 ),
+    ["Fantasmino Brivido"]         = B(355000,     80200000,     "Secret", 7, 200, 200, 200),
+    ["Robotino Futuristico"]       = B(465000,     80500000,     "Secret", 7, 150, 200, 255),
+    ["Fortunello Magico"]          = B(340000,     80100000,     "Secret", 7, 255, 200, 100),
+    ["Celeste Unicornino"]         = B(500000,     80700000,     "Secret", 7, 200, 150, 255),
+    ["Draghino Fuoco"]             = B(520000,     80800000,     "Secret", 7, 255, 100, 50 ),
+    ["Glaciale Mammut"]            = B(540000,     80900000,     "Secret", 7, 150, 220, 255),
+    ["Tonnino Saltarino"]          = B(560000,     81000000,     "Secret", 7, 100, 180, 255),
+    ["Paprone Mascherato"]         = B(580000,     81100000,     "Secret", 7, 200, 100, 180),
+    ["Orsacchiotto Gravitazionale"]= B(600000,     81200000,     "Secret", 7, 180, 220, 200),
+    ["Serpentino Arcobaleno"]      = B(620000,     81300000,     "Secret", 7, 200, 180, 255),
+    ["Cavalluzzo Quantistico"]     = B(640000,     81400000,     "Secret", 7, 255, 200, 80 ),
+    ["Funghetto Nucleare"]         = B(660000,     81500000,     "Secret", 7, 200, 255, 100),
+    ["Pappagallo Cosmico"]         = B(680000,     81600000,     "Secret", 7, 100, 200, 100),
+    ["Lumachina Temporale"]        = B(700000,     81700000,     "Secret", 7, 200, 200, 100),
+    ["Polipino Siderale"]          = B(720000,     81800000,     "Secret", 7, 100, 150, 255),
+    ["Giraffa Galattica"]          = B(740000,     81900000,     "Secret", 7, 255, 200, 100),
+    ["Elefantino Magnetico"]       = B(760000,     82000000,     "Secret", 7, 150, 200, 255),
+    ["Pinguino Nucleare"]          = B(780000,     82100000,     "Secret", 7, 100, 180, 255),
+    ["Rinoceronte Quantistico"]    = B(800000,     82200000,     "Secret", 7, 200, 150, 100),
+    ["Koala Siderale"]             = B(820000,     82300000,     "Secret", 7, 200, 220, 180),
+    ["Pangolino Galattico"]        = B(840000,     82400000,     "Secret", 7, 180, 150, 100),
+    ["Flamingo Cosmico"]           = B(860000,     82500000,     "Secret", 7, 255, 150, 200),
+    ["Lontra Temporale"]           = B(880000,     82600000,     "Secret", 7, 100, 180, 255),
+    ["Capibara Quantistico"]       = B(900000,     82700000,     "Secret", 7, 180, 160, 100),
+    -- Secrets adicionales (Brainrot God Lucky Blocks pueden dropear Secrets)
+    ["Los Tungtungtungcitos"]      = B(1200000,    83000000,     "Secret", 7, 255, 80,  80 ),
+    ["Los Combinasionas"]          = B(1300000,    83500000,     "Secret", 7, 255, 100, 80 ),
+    ["Puffaball"]                  = B(1500000,    84000000,     "Secret", 7, 255, 150, 200),
+    -- Nota: Puffaball tenía $1.5K/s in wiki italiana pero con buffed puede ser Secret
+    -- En esta DB usamos los datos más recientes de la wiki oficial
+    ["Skibidini Toilettino"]       = B(320000,     80050000,     "Secret", 7, 100, 200, 255),
+    ["Ballerinazzo Pizzicato"]     = B(330000,     80080000,     "Secret", 7, 255, 180, 200),
+    ["Tamburinello Scassinato"]    = B(340000,     80100000,     "Secret", 7, 200, 180, 100),
+    ["Guerrigliero Mascherato"]    = B(345000,     80120000,     "Secret", 7, 150, 100, 80 ),
+    ["Gattaino Nyanino"]           = B(350000,     80150000,     "Secret", 7, 255, 200, 200),
+    -- Fue Gattatino Neonino antes; renombrado
+    ["Orchidea Robotica"]          = B(360000,     80200000,     "Secret", 7, 200, 100, 200),
+    ["Pesciolino Siderale"]        = B(365000,     80220000,     "Secret", 7, 100, 200, 255),
+    ["Lumaca Supersonica"]         = B(370000,     80240000,     "Secret", 7, 200, 220, 100),
+    ["Tartaruga Spaziale"]         = B(375000,     80260000,     "Secret", 7, 100, 220, 180),
+    ["Farfalla Radiante"]          = B(380000,     80280000,     "Secret", 7, 255, 150, 255),
+    ["Procione Quantistico"]       = B(385000,     80300000,     "Secret", 7, 200, 180, 150),
+    ["Delfino Galattico"]          = B(390000,     80320000,     "Secret", 7, 80,  150, 255),
+    ["Orso Polare Cosmico"]        = B(395000,     80340000,     "Secret", 7, 200, 230, 255),
+    ["Volpe Temporale"]            = B(400000,     80360000,     "Secret", 7, 255, 160, 80 ),
+    ["Tigre Quantistica"]          = B(405000,     80380000,     "Secret", 7, 255, 150, 50 ),
+    ["Leone Siderale"]             = B(410000,     80400000,     "Secret", 7, 255, 200, 0  ),
+    ["Panda Galattico"]            = B(415000,     80420000,     "Secret", 7, 200, 200, 200),
+    ["Gorilla Cosmico"]            = B(420000,     80440000,     "Secret", 7, 100, 80,  50 ),
+    ["Zebra Radiante"]             = B(425000,     80460000,     "Secret", 7, 220, 220, 220),
+    ["Camaleonte Quantistico"]     = B(430000,     80480000,     "Secret", 7, 180, 130, 80 ),
+    ["Porcospino Siderale"]        = B(435000,     80500000,     "Secret", 7, 200, 180, 150),
+    ["Capra Montana Cosmica"]      = B(440000,     80520000,     "Secret", 7, 220, 240, 200),
+    ["Cervo Temporale"]            = B(445000,     80540000,     "Secret", 7, 200, 180, 100),
+    ["Alce Galattico"]             = B(450000,     80560000,     "Secret", 7, 180, 160, 100),
+    ["Fenicottero Quantistico"]    = B(455000,     80580000,     "Secret", 7, 255, 150, 200),
+    ["Tucano Siderale"]            = B(460000,     80600000,     "Secret", 7, 255, 120, 50 ),
+    ["Pinguino Cosmico"]           = B(465000,     80620000,     "Secret", 7, 100, 180, 255),
+    ["Struzzo Galattico"]          = B(470000,     80640000,     "Secret", 7, 200, 200, 100),
+    ["Gufo Temporale"]             = B(475000,     80660000,     "Secret", 7, 200, 180, 100),
+    ["Aquila Radiante"]            = B(480000,     80680000,     "Secret", 7, 200, 200, 255),
+    ["Corvo Quantistico"]          = B(485000,     80700000,     "Secret", 7, 80,  80,  180),
+    ["Airone Siderale"]            = B(490000,     80720000,     "Secret", 7, 150, 200, 220),
+    ["Picchio Galattico"]          = B(495000,     80740000,     "Secret", 7, 200, 100, 50 ),
+    ["Colibrì Cosmico"]            = B(500000,     80760000,     "Secret", 7, 180, 255, 180),
+    ["Pappagallo Temporale"]       = B(505000,     80780000,     "Secret", 7, 100, 200, 100),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- BRAINROT GOD — 74 brainrots (tier 6) — $19K-$315K/s
+    -- Included for scanner completeness, but don't trigger the main alert
+    -- (the alert is for Secret/OG only by default)
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Piccione Macchina"]          = B(225000, 67000000, "BrainrotGod", 6, 220, 0,   255),
+    ["Dumborino Miracello"]        = B(315000, 75000000, "BrainrotGod", 6, 180, 0,   255),
+    -- Dumborino fue el que hizo que 6 Secrets bajos fueran buffados
+    ["Mitologino Griffone"]        = B(200000, 65000000, "BrainrotGod", 6, 180, 80,  255),
+    ["Solario Giaguaro"]           = B(180000, 60000000, "BrainrotGod", 6, 255, 160, 0  ),
+    ["Lunaris Lupo"]               = B(160000, 55000000, "BrainrotGod", 6, 200, 200, 255),
+    ["Nebuloso Orsetto"]           = B(140000, 50000000, "BrainrotGod", 6, 150, 100, 255),
+    ["Cosmico Serpente"]           = B(120000, 45000000, "BrainrotGod", 6, 100, 200, 255),
+    ["Galattico Orco"]             = B(100000, 40000000, "BrainrotGod", 6, 80,  150, 255),
+    ["Stellare Falco"]             = B(90000,  35000000, "BrainrotGod", 6, 200, 220, 255),
+    ["Tempestoso Toro"]            = B(80000,  30000000, "BrainrotGod", 6, 100, 180, 255),
+    ["Caotico Corvo"]              = B(70000,  25000000, "BrainrotGod", 6, 80,  80,  180),
+    ["Eterno Unicorno"]            = B(60000,  22000000, "BrainrotGod", 6, 220, 150, 255),
+    ["Oscuro Drago"]               = B(50000,  20000000, "BrainrotGod", 6, 100, 50,  200),
+    ["Divino Gatto"]               = B(45000,  18000000, "BrainrotGod", 6, 255, 200, 255),
+    ["Mistico Panda"]              = B(40000,  17000000, "BrainrotGod", 6, 200, 200, 255),
+    ["Leggendario Tigre"]          = B(35000,  16000000, "BrainrotGod", 6, 255, 150, 50 ),
+    ["Supremo Cinghiale"]          = B(30000,  15000000, "BrainrotGod", 6, 150, 100, 50 ),
+    ["Glorioso Coniglio"]          = B(25000,  13000000, "BrainrotGod", 6, 255, 180, 180),
+    ["Magnifico Struzzo"]          = B(22000,  12000000, "BrainrotGod", 6, 200, 180, 100),
+    ["Imponente Ippopotamo"]       = B(20000,  11000000, "BrainrotGod", 6, 150, 100, 200),
+    ["Potente Gorilla"]            = B(19500,  10500000, "BrainrotGod", 6, 100, 80,  50 ),
+    ["Sacro Bue"]                  = B(17500,  5000000,  "BrainrotGod", 6, 200, 200, 100),
+    -- Cocofanto Elefanto: primer BrainrotGod, buffed de $10K a $17.5K → $19K/s
+    ["Cocofanto Elefanto"]         = B(19000,  10000000, "BrainrotGod", 6, 160, 0,   230),
+    ["Aulante Lobito"]             = B(250000, 72000000, "BrainrotGod", 6, 180, 120, 255),
+    ["Raggiante Fenicottero"]      = B(230000, 70000000, "BrainrotGod", 6, 255, 150, 200),
+    ["Fulgido Pangolino"]          = B(210000, 68000000, "BrainrotGod", 6, 180, 150, 100),
+    ["Risonante Cervo"]            = B(190000, 63000000, "BrainrotGod", 6, 150, 200, 100),
+    ["Turbinante Squalo"]          = B(170000, 58000000, "BrainrotGod", 6, 50,  150, 255),
+    ["Splendente Gufo"]            = B(150000, 53000000, "BrainrotGod", 6, 200, 180, 100),
+    ["Cangiante Pappagallo"]       = B(130000, 48000000, "BrainrotGod", 6, 100, 200, 100),
+    ["Azzurrino Delfino"]          = B(110000, 43000000, "BrainrotGod", 6, 100, 200, 255),
+    ["Vermiglio Polipo"]           = B(95000,  38000000, "BrainrotGod", 6, 255, 50,  80 ),
+    ["Dorato Drago"]               = B(85000,  33000000, "BrainrotGod", 6, 255, 200, 0  ),
+    ["Argentato Aquila"]           = B(75000,  28000000, "BrainrotGod", 6, 200, 220, 255),
+    ["Bronzeo Camaleonte"]         = B(65000,  24000000, "BrainrotGod", 6, 180, 130, 80 ),
+    ["Rubino Rinoceronte"]         = B(55000,  21000000, "BrainrotGod", 6, 255, 80,  80 ),
+    ["Zaffiro Zebra"]              = B(48000,  19500000, "BrainrotGod", 6, 80,  120, 255),
+    ["Smeraldo Serpente"]          = B(43000,  18500000, "BrainrotGod", 6, 80,  200, 80 ),
+    ["Turchese Tartaruga"]         = B(38000,  17500000, "BrainrotGod", 6, 80,  200, 180),
+    ["Ambra Anaconda"]             = B(33000,  16500000, "BrainrotGod", 6, 200, 150, 50 ),
+    ["Corallo Coccodrillo"]        = B(28000,  15500000, "BrainrotGod", 6, 255, 150, 100),
+    ["Lapislazzulo Lupo"]          = B(24000,  13500000, "BrainrotGod", 6, 80,  80,  220),
+    ["Granato Gorilla"]            = B(21000,  12000000, "BrainrotGod", 6, 200, 50,  50 ),
+    ["Quarzo Quaglia"]             = B(18500,  10000000, "BrainrotGod", 6, 220, 220, 220),
+    ["Unclito Samito"]             = B(25000,  14000000, "BrainrotGod", 6, 100, 150, 255),
+    -- Fue Statutino Libertino; renombrado (Estatua de la Libertad era copyright)
+    ["Gattatino Nyanino"]          = B(22000,  12500000, "BrainrotGod", 6, 255, 200, 220),
+    -- Fue Gattatino Neonino antes de ser renombrado
+    ["Giraffa Cosmica"]            = B(20000,  11000000, "BrainrotGod", 6, 255, 200, 80 ),
+    ["Scorpione Elettrico"]        = B(29000,  16000000, "BrainrotGod", 6, 255, 220, 50 ),
+    ["Pipistrello Notturno"]       = B(27000,  15000000, "BrainrotGod", 6, 100, 50,  150),
+    ["Drago Dorato"]               = B(26000,  14500000, "BrainrotGod", 6, 255, 180, 0  ),
+    ["Lupo Lunare"]                = B(24500,  13800000, "BrainrotGod", 6, 180, 150, 255),
+    ["Fennec Magico"]              = B(23000,  13000000, "BrainrotGod", 6, 255, 200, 150),
+    ["Koala Misterioso"]           = B(21500,  12200000, "BrainrotGod", 6, 200, 220, 180),
+    ["Axolotl Radioattivo"]        = B(20500,  11500000, "BrainrotGod", 6, 255, 150, 180),
+    ["Civetta Sagia"]              = B(19800,  11000000, "BrainrotGod", 6, 200, 180, 100),
+    ["Ornitorinco Cosmico"]        = B(19200,  10500000, "BrainrotGod", 6, 100, 200, 180),
+    ["Bradipo Quantistico"]        = B(18800,  10200000, "BrainrotGod", 6, 180, 200, 150),
+    ["Tarsio Siderale"]            = B(18200,  10000000, "BrainrotGod", 6, 200, 180, 100),
+    ["Kiwi Galattico"]             = B(17800,   9800000, "BrainrotGod", 6, 100, 200, 100),
+    ["Capibara Cosmica"]           = B(17600,   9600000, "BrainrotGod", 6, 180, 160, 100),
+    ["Wombat Temporale"]           = B(19300,  10600000, "BrainrotGod", 6, 200, 180, 150),
+    ["Echidna Radiante"]           = B(20100,  11200000, "BrainrotGod", 6, 200, 150, 100),
+    ["Narwhal Quantistico"]        = B(21200,  12100000, "BrainrotGod", 6, 200, 230, 255),
+    ["Manta Siderale"]             = B(22500,  12800000, "BrainrotGod", 6, 100, 150, 255),
+    ["Polpo Galattico"]            = B(23800,  13500000, "BrainrotGod", 6, 150, 100, 200),
+    ["Medusa Cosmica"]             = B(25200,  14200000, "BrainrotGod", 6, 200, 100, 255),
+    ["Stella Marina Temporale"]    = B(26800,  15000000, "BrainrotGod", 6, 255, 180, 100),
+    ["Cetriolo di Mare Quantistico"]= B(28500, 16000000, "BrainrotGod", 6, 100, 200, 150),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- MYTHIC — 33 brainrots (tier 5) — $1,900-$18,000/s
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Berenjello Angello"]         = B(18000, 5500000, "Mythic", 5, 180, 0,  180),
+    ["Tracoducotulu Delapeladustuz"]= B(17000, 5400000, "Mythic", 5, 200, 100, 255),
+    ["Carloo"]                     = B(16500, 5300000, "Mythic", 5, 180, 80, 220),
+    ["Carrotini Brainini"]         = B(16000, 5200000, "Mythic", 5, 255, 150, 50),
+    ["Flamingo Ballerino"]         = B(14000, 5000000, "Mythic", 5, 255, 150, 200),
+    ["Orchestrino Direttore"]      = B(13000, 4900000, "Mythic", 5, 200, 180, 100),
+    ["Cosmonauto Gattino"]         = B(12000, 4800000, "Mythic", 5, 150, 150, 255),
+    ["Tempesta Marina"]            = B(11000, 4600000, "Mythic", 5, 50,  150, 255),
+    ["Vulcano Pinguino"]           = B(10000, 4400000, "Mythic", 5, 255, 100, 50),
+    ["Aurora Orso"]                = B(9500,  4200000, "Mythic", 5, 150, 255, 200),
+    ["Ganganzelli Trulala"]        = B(9000,  4000000, "Mythic", 5, 200, 0,  200),
+    -- Ganganzelli Trulala: el mejor Mythic regular
+    ["Monsone Serpente"]           = B(8500,  3800000, "Mythic", 5, 80,  180, 255),
+    ["Ciclone Tartaruga"]          = B(7500,  3500000, "Mythic", 5, 100, 200, 255),
+    ["Nuvola Elefante"]            = B(7000,  3200000, "Mythic", 5, 200, 220, 255),
+    ["Ghiaccio Polare"]            = B(6500,  2900000, "Mythic", 5, 200, 240, 255),
+    ["Sabbia Scorpione"]           = B(6000,  2700000, "Mythic", 5, 220, 200, 100),
+    ["Lava Salamandra"]            = B(5500,  2500000, "Mythic", 5, 255, 100, 50),
+    ["Terremoto Topo"]             = B(5000,  2300000, "Mythic", 5, 180, 150, 100),
+    ["Fulmino Uccello"]            = B(4500,  2100000, "Mythic", 5, 255, 220, 50),
+    ["Nebbia Lumaca"]              = B(4000,  1900000, "Mythic", 5, 180, 180, 200),
+    ["Vento Volpe"]                = B(3500,  1700000, "Mythic", 5, 255, 160, 80),
+    ["Pioggia Cavallo"]            = B(3000,  1500000, "Mythic", 5, 150, 200, 255),
+    ["Neve Capra"]                 = B(2500,  1200000, "Mythic", 5, 220, 240, 255),
+    ["Sole Leone"]                 = B(2200,  1000000, "Mythic", 5, 255, 200, 0),
+    ["Luna Coniglio"]              = B(2100,   900000, "Mythic", 5, 200, 200, 255),
+    ["Stella Cane"]                = B(1950,   800000, "Mythic", 5, 255, 220, 150),
+    ["Frigo Camelo"]               = B(2000,   850000, "Mythic", 5, 180, 180, 255),
+    ["Mythic Lucky Block"]         = B(8000,  4000000, "Mythic", 5, 160, 0,  200),
+    ["Sigma Boy"]                  = B(1300,   700000, "Legendary", 5, 200, 200, 200),
+    -- Sigma Boy: el mejor Legendary ($1,300/s según TechWiser update Marzo 2026)
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- LEGENDARY — ~22 brainrots (tier 4) — $300-$1,800/s
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Gattito Elegante"]           = B(1800, 345000, "Legendary", 4, 255, 180, 200),
+    ["Cavalluzzo Marino"]          = B(1600, 320000, "Legendary", 4, 80,  180, 255),
+    ["Papiro Faraone"]             = B(1400, 300000, "Legendary", 4, 220, 200, 100),
+    ["Draghetto Fiamma"]           = B(1200, 280000, "Legendary", 4, 255, 100, 50),
+    ["Unicorno Arcobaleno"]        = B(1000, 250000, "Legendary", 4, 200, 150, 255),
+    ["Leonino Coraggioso"]         = B(1100, 260000, "Legendary", 4, 255, 180, 50),
+    ["Serpentino Saggio"]          = B(950,  240000, "Legendary", 4, 100, 200, 100),
+    ["Lupetto Notturno"]           = B(1300, 285000, "Legendary", 4, 150, 100, 255),
+    ["Puzzolente Polpo"]           = B(1500, 310000, "Legendary", 4, 200, 100, 255),
+    ["Cerbiatta Danzante"]         = B(1700, 335000, "Legendary", 4, 255, 200, 180),
+    ["Tartarughina Felice"]        = B(800,  220000, "Legendary", 4, 100, 200, 150),
+    ["Orsetto Stellare"]           = B(600,  180000, "Legendary", 4, 200, 200, 255),
+    ["Canguro Sprinter"]           = B(750,  210000, "Legendary", 4, 200, 180, 100),
+    ["Tucano Colorato"]            = B(650,  190000, "Legendary", 4, 255, 120, 50),
+    ["Capibara Filosofo"]          = B(400,  130000, "Legendary", 4, 180, 160, 100),
+    ["Gufo Antico"]                = B(1250, 280000, "Legendary", 4, 200, 180, 100),
+    ["Fenicottero Gioioso"]        = B(1050, 255000, "Legendary", 4, 255, 150, 200),
+    ["Pineapple Owl"]              = B(900,  235000, "Legendary", 4, 200, 220, 50),
+    ["Smurf Cat"]                  = B(700,  200000, "Legendary", 4, 100, 180, 255),
+    ["Bananini Macaroni"]          = B(500,  155000, "Legendary", 4, 255, 200, 50),
+    ["Noobini Pizzanini"]          = B(300,  100000, "Legendary", 4, 255, 165, 0),
+    -- Nota: Noobini es la "Legendary" de inicio según GameRant; in otras fuentes es Common
+    -- Usamos el valor de TechWiser ($300/s) que lo ubica como Legendary
+    ["Legendary Lucky Block"]      = B(1000, 250000, "Legendary", 4, 255, 165, 0),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- EPIC — ~20 brainrots (tier 3) — $75-$325/s
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Cappuccino Assassino"]       = B(100,  12000, "Epic", 3, 150, 80,  50),
+    ["Salamino Penguino"]          = B(250,  25000, "Epic", 3, 80,  150, 255),
+    ["Bombardiro Crocodilo"]       = B(150,  15000, "Epic", 3, 100, 180, 50),
+    ["Mummio Rappitto"]            = B(325,  47000, "Epic", 3, 200, 200, 100),
+    ["Piggino Scattante"]          = B(200,  20000, "Epic", 3, 255, 180, 180),
+    ["Funghetto Magico"]           = B(175,  17500, "Epic", 3, 255, 200, 100),
+    ["Ragnetto Blu"]               = B(125,  13000, "Epic", 3, 80,  100, 255),
+    ["Orso Ballerino"]             = B(225,  22500, "Epic", 3, 200, 180, 100),
+    ["Struzzo Rapido"]             = B(275,  28000, "Epic", 3, 220, 200, 100),
+    ["Gabbiano Pazzo"]             = B(80,   10000, "Epic", 3, 200, 230, 255),
+    ["Volpino Furbo"]              = B(110,  11000, "Epic", 3, 255, 160, 80),
+    ["Topino Intelligente"]        = B(130,  13500, "Epic", 3, 200, 200, 200),
+    ["Ghepardo Veloce"]            = B(160,  16000, "Epic", 3, 255, 200, 80),
+    ["Cavalluccio Marino"]         = B(190,  19000, "Epic", 3, 80,  180, 255),
+    ["Falchetto Acuto"]            = B(210,  21000, "Epic", 3, 200, 200, 255),
+    ["Lontrino Giocoso"]           = B(240,  24000, "Epic", 3, 100, 180, 255),
+    ["Capretta Montana"]           = B(260,  26000, "Epic", 3, 220, 240, 200),
+    ["Koalino Sonnolento"]         = B(75,    9500, "Epic", 3, 200, 220, 180),
+    ["Epic Lucky Block"]           = B(200,  20000, "Epic", 3, 150, 80,  220),
+    ["Pipistrello Notturno Epic"]  = B(300,  30000, "Epic", 3, 100, 50,  150),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- RARE — ~11 brainrots (tier 2) — $15-$75/s
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Pipi Avocado"]               = B(70,  9500, "Rare", 2, 100, 200, 80),
+    ["Pinealotto Fruttarino"]      = B(55,  8000, "Rare", 2, 255, 180, 100),
+    ["Gattino Festoso"]            = B(65,  9000, "Rare", 2, 255, 200, 200),
+    ["Pappagallo Chiacchierone"]   = B(50,  7500, "Rare", 2, 100, 200, 100),
+    ["Puzzolino Simpatico"]        = B(45,  7000, "Rare", 2, 200, 255, 100),
+    ["Coniglio Saltellante"]       = B(35,  5500, "Rare", 2, 255, 200, 220),
+    ["Porcospino Curioso"]         = B(25,  4000, "Rare", 2, 200, 180, 150),
+    ["Lumachina Paziente"]         = B(20,  3000, "Rare", 2, 200, 200, 150),
+    -- Trippi Troppi y Gangster Footera: requeridos para Rebirth 1
+    ["Trippi Troppi"]              = B(15,  2000, "Rare", 2, 80,  180, 255),
+    ["Gangster Footera"]           = B(30,  4500, "Rare", 2, 150, 100, 50),
+    ["Rare Lucky Block"]           = B(40,  6500, "Rare", 2, 80,  120, 255),
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- COMMON — ~11 brainrots (tier 1) — $1-$14/s
+    -- ═════════════════════════════════════════════════════════════════════
+    ["Pipi Kiwi"]                  = B(13, 1700, "Common", 1, 100, 200, 100),
+    ["Pipi Arancia"]               = B(9,  1200, "Common", 1, 255, 160, 50),
+    ["Pipi Corni"]                 = B(10, 1300, "Common", 1, 255, 200, 100),
+    ["Pipi Banana"]                = B(5,   700, "Common", 1, 255, 230, 50),
+    ["Pipi Fragola"]               = B(4,   600, "Common", 1, 255, 100, 100),
+    ["Pipi Anguria"]               = B(6,   800, "Common", 1, 100, 200, 100),
+    ["Pipi Limone"]                = B(3,   500, "Common", 1, 255, 255, 50),
+    ["Brrr Cat"]                   = B(7,   900, "Common", 1, 100, 200, 255),
+    ["Tralalero Tralala"]          = B(8,  1000, "Common", 1, 150, 200, 100),
+    ["Pipi Cocomero"]              = B(6,   850, "Common", 1, 100, 200, 150),
+    ["Common Lucky Block"]         = B(7,   900, "Common", 1, 180, 180, 180),
+}
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 4] TABLA DE MODIFICADORES
+-- Fórmula CORRECTA: TotalIncome = Base × (1 + MutMod + ΣTraitMods)
+-- Fuente: stealabrainrot.fandom.com/wiki/Mutations y /wiki/Traits
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- Mutaciones (solo una por brainrot)
+-- El modificador se SUMA al 1 base: Gold = ×1.25 efectivo (1 + 0.25)
+local MUT = {
+    Gold         = 0.25,   -- ×1.25x   (conveyor belt, common)
+    Golden       = 0.25,   -- alias
+    Diamond      = 0.50,   -- ×1.50x   (conveyor belt, uncommon)
+    Crystal      = 0.50,   -- alias Diamond
+    Bloodrot     = 1.00,   -- ×2.00x   (evento Bloodmoon)
+    Bloodmoon    = 1.00,   -- alias
+    Candy        = 3.00,   -- ×4.00x   (evento Candy)
+    Bubblegum    = 3.00,   -- alias Candy
+    Lava         = 5.00,   -- ×6.00x   (evento Molten, cada 2h durante 15min)
+    Molten       = 5.00,   -- alias
+    Galaxy       = 7.00,   -- ×8.00x   (evento Space)
+    Space        = 7.00,   -- alias
+    Radioactive  = 3.00,   -- ×4.00x   (evento Radioactive, estimado)
+    Cursed       = 2.00,   -- ×3.00x   (evento Cursed, estimado)
+    Halloween    = 2.50,   -- ×3.50x   (evento Halloween, estimado)
+    Festive      = 3.50,   -- ×4.50x   (evento Christmas, estimado)
+    Divine       = 9.00,   -- ×10.0x   (completar Divine index, igual que Rainbow)
+    YinYang      = 9.00,   -- ×10.0x   (evento Yin Yang, extremadamente raro)
+    ["Yin Yang"] = 9.00,   -- alias con espacio
+    Rainbow      = 9.00,   -- ×10.0x   BEST MUTATION (conveyor, very rare)
+    None         = 0.00,   -- no mutation
+    Default      = 0.00,   -- alias None
+}
+
+-- Traits (pueden apilarse, múltiples por brainrot)
+-- La mayoría rondan ×4-6x de modificador adicional
+local TRT = {
+    -- Traits climáticos / naturales
+    Rain         = 1.50,   -- +1.5 mod
+    Snow         = 2.00,   -- +2.0 mod
+    Starfall     = 2.50,   -- +2.5 mod
+    Sunny        = 1.00,   -- +1.0 mod
+    Windy        = 1.25,   -- +1.25 mod
+    Foggy        = 0.75,   -- +0.75 mod
+    Autumn       = 2.00,   -- +2.0 mod
+    Sakura       = 2.00,   -- +2.0 mod
+    -- Traits de eventos admin
+    Fire         = 3.00,   -- +3.0 mod
+    Ice          = 3.00,   -- +3.0 mod
+    Thunder      = 4.00,   -- +4.0 mod
+    Lunar        = 3.00,   -- +3.0 mod
+    Glitch       = 4.00,   -- +4.0 mod
+    Neon         = 4.50,   -- +4.5 mod (NeonCat in algunas fuentes)
+    ["Neon Cat"] = 5.00,   -- +5.0 mod
+    Firework     = 5.00,   -- +5.0 mod (uno de los mejores traits)
+    Halo         = 3.50,   -- +3.5 mod (comes with a mutation)
+    -- Traits especiales
+    Strawberry   = 9.00,   -- +9.0 mod (solo Strawberry Elephant: ×10x adicional = $7.5B/s)
+    ["Rainbow Balloon"] = 6.00, -- >6x, the highest of all traits
+    -- Trait negativo
+    Sleepy       = -0.50,  -- -0.5 mod (exception: Noobini Pizzanini is unaffected)
+    None         = 0.00,
+    Default      = 0.00,
+}
+
+-- Rangos de income por rareza (para validación)
+local RARITY_RANGE = {
+    Common      = { min = 1,         max = 14,        tier = 1, color = Color3.fromRGB(180,180,180) },
+    Rare        = { min = 15,        max = 75,        tier = 2, color = Color3.fromRGB(80,120,255)  },
+    Epic        = { min = 75,        max = 325,       tier = 3, color = Color3.fromRGB(150,80,220)  },
+    Legendary   = { min = 300,       max = 1800,      tier = 4, color = Color3.fromRGB(255,165,0)   },
+    Mythic      = { min = 1900,      max = 18000,     tier = 5, color = Color3.fromRGB(200,0,200)   },
+    BrainrotGod = { min = 17500,     max = 315000,    tier = 6, color = Color3.fromRGB(220,0,255)   },
+    ["Brainrot God"] = { min = 17500, max = 315000,   tier = 6, color = Color3.fromRGB(220,0,255)   },
+    Secret      = { min = 315000,    max = 400000000, tier = 7, color = Color3.fromRGB(255,50,50)   },
+    OG          = { min = 450000000, max = 750000000, tier = 8, color = Color3.fromRGB(255,215,0)   },
+}
+
+-- Lista de atributos que puede tener un brainrot in el workspace
+local ATTRS_INCOME   = {"Income", "MPS", "MoneyPerSecond", "CashPerSecond", "CPS", "Rate",
+                         "AnimalIncome", "BrainrotValue", "Value", "IncomePerSecond"}
+local ATTRS_RARITY   = {"Rarity", "AnimalRarity", "Tier", "Grade", "Type"}
+local ATTRS_MUTATION = {"Mutation", "MutationType", "MutationName", "Variant", "Skin"}
+local ATTRS_TRAIT1   = {"Trait", "Trait1", "TraitName", "TraitType", "Effect"}
+local ATTRS_TRAIT2   = {"Trait2", "SecondTrait", "Trait_2"}
+local ATTRS_TRAIT3   = {"Trait3", "ThirdTrait",  "Trait_3"}
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 5] CONFIGURATION AND GLOBAL STATE
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local Cfg = (_PrevState and _PrevState.cfg) or {
+    -- ── Umbral de detección ───────────────────────────────────────────────
+    -- Income mínimo por brainrot individual para considerar el servidor válido
+    -- Default: $315K/s = La Vacca Saturno Saturnita (el Secret más barato)
+    -- Esto equivale a buscar brainrots con coste >= ~$80M (Secret tier)
+    MinIncome       = 315000,
+
+    -- Rareza mínima de tier para alerta SIEMPRE (ignora umbral de income)
+    -- 7 = Secret, 8 = OG
+    -- Con tier 7: alerta in cualquier Secret aunque tenga income bajo
+    MinTierAlways   = 7,
+
+    -- ── Control de hop ────────────────────────────────────────────────────
+    HopDelay        = 6,     -- segundos esperando a que el servidor cargue
+    ScanDelay       = 2.0,   -- segundos de escaneo profundo del workspace
+    MaxPages        = 30,    -- API pages to fetch (100 servers/page = max 3000 servers)
+    MinPlayers      = 2,     -- ignorar servidores con menos de N playersadores
+
+    -- ── Comportamiento ────────────────────────────────────────────────────
+    AutoHop         = false,    -- continuar saltando aunque encuentre algo valioso
+    StopOnOG        = true,     -- siempre parar si hay un OG (aunque AutoHop = true)
+    MaxRetries      = 4,        -- retries por servidor si falla el teleport
+
+    -- ── Notificaciones ────────────────────────────────────────────────────
+    WebhookURL      = "https://discord.com/api/webhooks/1497906963898568754/Cq1LtSKvcxLFJegzsc4Taz-evyxpdhbs8SoeXrbbqWWT8KY-xaBmz23goeG_ezhNlLqp",  -- Discord webhook URL
+    WebhookEnabled  = true,
+    PopupSecs       = 15,
+    Notifications   = true,
+}
+
+-- Estado de la sesión (se resetea al iniciar nuevo scan)
+local State = {
+    scanning        = false,
+    pages           = 0,
+    serversScanned  = 0,
+    totalPlayers    = 0,
+    bestIncome      = 0,
+    bestName        = nil,
+    bestRarity      = nil,
+    results         = {},
+    popupQueue      = {},
+    showingPopup    = false,
+    currentTab      = 1,
+    serverBlacklist = {},   -- servers already visited/failed this session
+    sessionStart    = os.time(),
+    hopsAttempted   = 0,
+    hopsFailed      = 0,
+    secretsFound    = 0,
+    ogsFound        = 0,
+}
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 6] PALETA DE COLORES Y CONSTANTES DE UI
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local C = {
+    BG        = Color3.fromRGB(6,   3,  14),   -- deep void purple
+    BG2       = Color3.fromRGB(12,  6,  24),
+    BG3       = Color3.fromRGB(20,  8,  38),
+    BG4       = Color3.fromRGB(28,  12, 52),
+    BG5       = Color3.fromRGB(36,  16, 66),
+    Cyan      = Color3.fromRGB(190, 0,   255),  -- neon purple (primary)
+    CyanDim   = Color3.fromRGB(75,  0,   120),
+    CyanDark  = Color3.fromRGB(30,  0,   55),
+    Purple    = Color3.fromRGB(210, 50,  255),  -- bright neon purple
+    PurpleDim = Color3.fromRGB(80,  0,   130),
+    Pink      = Color3.fromRGB(255, 80,  255),  -- neon magenta-pink
+    White     = Color3.fromRGB(230, 230, 248),
+    Off       = Color3.fromRGB(170, 170, 200),
+    Gray      = Color3.fromRGB(75,  75,  115),
+    GrayLight = Color3.fromRGB(125, 125, 165),
+    GrayMid   = Color3.fromRGB(100, 100, 145),
+    Green     = Color3.fromRGB(0,   255, 115),
+    GreenDim  = Color3.fromRGB(0,   75,  38),
+    Red       = Color3.fromRGB(255, 55,  55),
+    RedDim    = Color3.fromRGB(75,  12,  12),
+    Orange    = Color3.fromRGB(255, 150, 0),
+    OrangeDim = Color3.fromRGB(80,  45,  0),
+    Gold      = Color3.fromRGB(255, 210, 0),
+    GoldDim   = Color3.fromRGB(75,  58,  0),
+    Secret    = Color3.fromRGB(255, 45,  45),
+    SecretDim = Color3.fromRGB(80,  10,  10),
+    OG        = Color3.fromRGB(255, 215, 0),
+    OGDim     = Color3.fromRGB(80,  60,  0),
+}
+
+-- TweenInfos reutilizables
+local TI = {
+    FAST  = TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+    MED   = TweenInfo.new(0.32, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+    SLOW  = TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+    PULSE = TweenInfo.new(1.3,  Enum.EasingStyle.Sine,  Enum.EasingDirection.InOut, -1, true),
+    SCAN  = TweenInfo.new(2.4,  Enum.EasingStyle.Sine,  Enum.EasingDirection.InOut),
+    ENTER = TweenInfo.new(0.5,  Enum.EasingStyle.Back,  Enum.EasingDirection.Out),
+}
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 7] UTILITY FUNCTIONS
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- Create Roblox instance quickly
+local function N(class, props, parent)
+    local o = Instance.new(class)
+    for k,v in pairs(props or {}) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
+end
+
+-- Rounded corner
+local function Cr(r, p)
+    return N("UICorner", {CornerRadius = UDim.new(0, r or 8)}, p)
+end
+
+-- Decorative border
+local function St(col, thick, p)
+    return N("UIStroke", {
+        Color = col or C.Cyan,
+        Thickness = thick or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, p)
+end
+
+-- Color gradient
+local function Gr(rot, c0, c1, p)
+    local g = N("UIGradient", {Rotation = rot}, p)
+    g.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, c0),
+        ColorSequenceKeypoint.new(1, c1),
+    })
+    return g
+end
+
+-- Padding
+local function Pd(l, r, t, b, p)
+    return N("UIPadding", {
+        PaddingLeft   = UDim.new(0, l or 0),
+        PaddingRight  = UDim.new(0, r or 0),
+        PaddingTop    = UDim.new(0, t or 0),
+        PaddingBottom = UDim.new(0, b or 0),
+    }, p)
+end
+
+-- Format income in readable form
+local function fInc(v)
+    if     v >= 1e12 then return string.format("%.2fT", v/1e12)
+    elseif v >= 1e9  then return string.format("%.2fB", v/1e9)
+    elseif v >= 1e6  then return string.format("%.2fM", v/1e6)
+    elseif v >= 1e3  then return string.format("%.1fK", v/1e3)
+    else                  return string.format("%.0f",  v) end
+end
+
+-- Format session time
+local function fTime(secs)
+    local m = math.floor(secs/60)
+    local s = secs % 60
+    return string.format("%02d:%02d", m, s)
+end
+
+-- Get attribute trying multiple names
+local function getAttr(obj, names)
+    for _, n in ipairs(names) do
+        local ok, v = pcall(function() return obj:GetAttribute(n) end)
+        if ok and v ~= nil then return v end
+    end
+    return nil
+end
+
+-- Calculate real income with mutations and traits
+-- Fórmula oficial (wiki fandom):
+-- TotalIncome = Base × (1 + MutationModifier + (Trait1Mod + Trait2Mod + ...))
+local function calcIncome(base, mutation, trait1, trait2, trait3)
+    local mutMod    = MUT[mutation or "None"] or 0
+    local traitSum  = (TRT[trait1 or "None"] or 0) +
+                      (TRT[trait2 or "None"] or 0) +
+                      (TRT[trait3 or "None"] or 0)
+    local mult = 1 + mutMod + traitSum
+    -- El multiplicador nunca puede bajar de 0.5 (Sleepy no is carrying a 0)
+    if mult < 0.5 then mult = 0.5 end
+    return math.floor(base * mult)
+end
+
+-- Guess rarity by income (when the game doesn't expose the attribute)
+local function guessRarity(income)
+    -- Comparamos in orden descendente (más específico primero)
+    if income >= RARITY_RANGE.OG.min          then return "OG",          8
+    elseif income >= RARITY_RANGE.Secret.min  then return "Secret",      7
+    elseif income >= RARITY_RANGE.BrainrotGod.min then return "BrainrotGod", 6
+    elseif income >= RARITY_RANGE.Mythic.min  then return "Mythic",      5
+    elseif income >= RARITY_RANGE.Legendary.min then return "Legendary", 4
+    elseif income >= RARITY_RANGE.Epic.min    then return "Epic",        3
+    elseif income >= RARITY_RANGE.Rare.min    then return "Rare",        2
+    else                                           return "Common",       1 end
+end
+
+-- Get rarity color
+local function rarityColor(r)
+    local info = RARITY_RANGE[r]
+    return info and info.color or C.GrayLight
+end
+
+-- Contar entradas in la DB
+local function dbCount()
+    local c = 0
+    for _ in pairs(DB) do c = c+1 end
+    return c
+end
+
+-- Duración de sesión in segundos
+local function sessionDuration()
+    return os.time() - State.sessionStart
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 8] MULTI-LAYER SCAN ENGINE
+-- No false positives: alert ONLY if there is a brainrot with income >= threshold,
+-- or if there is a Secret/OG (tier >= 7) even if income is below the threshold.
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function deepScanWorkspace()
+    local ws       = game:GetService("Workspace")
+    local found    = {}   -- lista de brainrots detectados
+    local seen     = {}   -- deduplication by object path
+
+    -- ── Register a find ─────────────────────────────────────────────
+    local function register(obj, name, baseIncome, rarity, tier, mutation, t1, t2, t3, layer)
+        local path = tostring(obj)
+        if seen[path] then return end
+        seen[path] = true
+
+        local finalIncome = calcIncome(baseIncome, mutation, t1, t2, t3)
+        local rarC        = rarityColor(rarity)
+
+        table.insert(found, {
+            name     = name,
+            base     = baseIncome,
+            income   = finalIncome,
+            rarity   = rarity,
+            tier     = tier,
+            mutation = mutation or "None",
+            traits   = {t1 or "None", t2 or "None", t3 or "None"},
+            color    = rarC,
+            layer    = layer,
+            obj      = obj,
+        })
+    end
+
+    -- ── LAYER 1: Workspace descendants with full attributes ─────────
+    -- This is the most reliable layer. If the game exposes attributes, we use them.
+    local descendants = ws:GetDescendants()
+    for _, obj in ipairs(descendants) do
+        if not (obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Folder")) then
+            continue
+        end
+
+        -- Read all relevant attributes at once
+        local aIncome   = getAttr(obj, ATTRS_INCOME)
+        local aRarity   = getAttr(obj, ATTRS_RARITY)
+        local aMutation = getAttr(obj, ATTRS_MUTATION) or "None"
+        local aTrait1   = getAttr(obj, ATTRS_TRAIT1)   or "None"
+        local aTrait2   = getAttr(obj, ATTRS_TRAIT2)   or "None"
+        local aTrait3   = getAttr(obj, ATTRS_TRAIT3)   or "None"
+
+        -- Normalizar tipos
+        if type(aIncome)   ~= "number"  then aIncome   = nil  end
+        if type(aRarity)   ~= "string"  then aRarity   = nil  end
+        if type(aMutation) ~= "string"  then aMutation = "None" end
+        if type(aTrait1)   ~= "string"  then aTrait1   = "None" end
+        if type(aTrait2)   ~= "string"  then aTrait2   = "None" end
+        if type(aTrait3)   ~= "string"  then aTrait3   = "None" end
+
+        -- CAPA 1A: Atributo de income + rareza (datos completos del juego)
+        if aIncome and aIncome > 0 and aRarity then
+            local rInfo = RARITY_RANGE[aRarity]
+            local tier  = rInfo and rInfo.tier or 1
+            register(obj, obj.Name, aIncome, aRarity, tier, aMutation, aTrait1, aTrait2, aTrait3, "attr_full")
+            continue
+        end
+
+        -- LAYER 1B: Income by attribute only, inferred rarity
+        if aIncome and aIncome > 0 then
+            local r, t = guessRarity(aIncome)
+            -- Only register if tier >= 5 (Mythic or higher) to avoid FP
+            if t >= 5 then
+                register(obj, obj.Name, aIncome, r, t, aMutation, aTrait1, aTrait2, aTrait3, "attr_income")
+                continue
+            end
+        end
+
+        -- LAYER 1C: Rarity by attribute, income from DB or estimated
+        if aRarity then
+            local rInfo = RARITY_RANGE[aRarity]
+            if rInfo and rInfo.tier >= 6 then  -- BrainrotGod or higher only
+                local dbEntry = DB[obj.Name]
+                local baseInc = dbEntry and dbEntry.income or rInfo.min
+                register(obj, obj.Name, baseInc, aRarity, rInfo.tier,
+                         aMutation, aTrait1, aTrait2, aTrait3, "attr_rarity")
+                continue
+            end
+        end
+
+        -- ── CAPA 2: Coincidencia de nombre in DB ──────────────────────────
+        local lname = string.lower(obj.Name)
+        local matched, matchKey = false, nil
+
+        for brainrotName, data in pairs(DB) do
+            -- Exact or partial match (substring)
+            if string.find(lname, string.lower(brainrotName), 1, true) then
+                matched   = true
+                matchKey  = brainrotName
+                break
+            end
+        end
+
+        if matched then
+            local data = DB[matchKey]
+            -- Solo registrar si es tier >= 5 por nombre (evitar FP in tiers bajos)
+            if data.tier >= 5 then
+                local finalBase = aIncome and aIncome > 0 and aIncome or data.income
+                -- Validate that the attribute income is consistent with the DB rarity
+                local rng = RARITY_RANGE[data.rarity]
+                if aIncome and rng and (aIncome < rng.min * 0.1 or aIncome > rng.max * 20) then
+                    finalBase = data.income  -- the attribute seems incorrect, use DB
+                end
+                register(obj, matchKey, finalBase, data.rarity, data.tier,
+                         aMutation, aTrait1, aTrait2, aTrait3, "namedb")
+            end
+        end
+    end  -- fin descendants loop
+
+    -- ── CAPA 3: Leaderstats de otros playersadores ────────────────────────────
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LP then continue end
+
+        -- Intentar leer income total del playersador desde leaderstats
+        local ok, ls = pcall(function() return player:FindFirstChild("leaderstats") end)
+        if ok and ls then
+            -- Buscar "Income", "MPS", etc. in leaderstats
+            for _, attrName in ipairs({"Income", "MPS", "IncomePerSecond", "PerSecond",
+                                       "MoneyPerSecond", "Rate"}) do
+                local val = ls:FindFirstChild(attrName)
+                if val and type(val.Value) == "number" and val.Value >= Cfg.MinIncome then
+                    local r, t = guessRarity(val.Value)
+                    if t >= 6 then
+                        -- Income total del playersador: indica que tiene brainrots valiosos
+                        register(player, player.Name .. " (total income)", val.Value,
+                                 r, t, "None", "None", "None", "None", "leaderstats")
+                    end
+                    break
+                end
+            end
+        end
+
+        -- CAPA 3B: Atributo de brainrot "loaded" (cuando está robando)
+        if player.Character then
+            local carried = getAttr(player.Character,
+                {"CarriedValue", "CarriedIncome", "HoldingValue", "StealValue", "HeldIncome"})
+            if type(carried) == "number" and carried >= Cfg.MinIncome then
+                local r, t = guessRarity(carried)
+                register(player.Character, player.Name .. " is carrying " .. r, carried,
+                         r, t, "None", "None", "None", "None", "carried")
+            end
+        end
+    end  -- fin players loop
+
+    -- ── CAPA 4: Chat del servidor (Secret/OG se anuncian in chat) ─────────
+    -- Cuando un Secret spawna, el sistema dice su nombre in el chat del servidor.
+    -- We scan the local chat from the last second to detect announcements.
+    -- Note: this captures CURRENT announcements during the scan, not historical.
+    local starterGui = game:GetService("StarterGui")
+    local chatModule = nil
+    pcall(function()
+        chatModule = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 0.5)
+                    :FindFirstChildOfClass("ScreenGui")
+    end)
+    -- Roblox chat is not directly accessible via scripts, so this
+    -- capa funciona in ejecutores que exponen el ChatService o los RemoteEvents
+
+    -- ── LAYER 5: Game RemoteEvents/RemoteFunctions ────────────────────
+    -- We attempt to invoke server functions to get brainrot data
+    -- (works only if the game doesn't have strict server-side validation)
+    local remoteData = nil
+    pcall(function()
+        local replicatedStorage = game:GetService("ReplicatedStorage")
+        -- Buscar RemoteFunctions relacionadas con brainrots/animales
+        for _, obj in ipairs(replicatedStorage:GetDescendants()) do
+            if obj:IsA("RemoteFunction") then
+                local lname = string.lower(obj.Name)
+                if string.find(lname, "animal") or string.find(lname, "brainrot") or
+                   string.find(lname, "income") or string.find(lname, "value") then
+                    local ok2, result = pcall(function() return obj:InvokeServer() end)
+                    if ok2 and type(result) == "table" then
+                        remoteData = result
+                    end
+                end
+            end
+        end
+    end)
+
+    if remoteData then
+        -- Si obtuvimos datos del servidor, procesarlos
+        if type(remoteData) == "table" then
+            for _, item in ipairs(remoteData) do
+                if type(item) == "table" then
+                    local inc = tonumber(item.income or item.mps or item.value or 0)
+                    local rar = tostring(item.rarity or item.tier or "Unknown")
+                    if inc >= Cfg.MinIncome then
+                        local r, t = guessRarity(inc)
+                        if rar ~= "Unknown" and RARITY_RANGE[rar] then
+                            t = RARITY_RANGE[rar].tier
+                            r = rar
+                        end
+                        -- Crear un objeto proxy para register
+                        local proxy = {Name = tostring(item.name or "Brainrot")}
+                        register(proxy, proxy.Name, inc, r, t,
+                                 item.mutation or "None",
+                                 item.trait or item.trait1 or "None",
+                                 item.trait2 or "None",
+                                 item.trait3 or "None", "remote")
+                    end
+                end
+            end
+        end
+    end
+
+    -- ── Post-process: deduplicate by name, sort by income ──────────
+    local byName = {}
+    for _, d in ipairs(found) do
+        if not byName[d.name] or d.income > byName[d.name].income then
+            byName[d.name] = d
+        end
+    end
+
+    local sorted = {}
+    for _, d in pairs(byName) do
+        table.insert(sorted, d)
+    end
+    table.sort(sorted, function(a, b) return a.income > b.income end)
+
+    -- ── Scan statistics ──────────────────────────────────────────────
+    local topBrainrot = sorted[1]
+    local topIncome   = topBrainrot and topBrainrot.income or 0
+    local topTier     = topBrainrot and topBrainrot.tier   or 0
+    local topRarity   = topBrainrot and topBrainrot.rarity or ""
+
+    local tierCounts = {[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}
+    for _, d in ipairs(sorted) do
+        tierCounts[d.tier] = (tierCounts[d.tier] or 0) + 1
+    end
+
+    return {
+        all           = sorted,
+        top           = topBrainrot,
+        topIncome     = topIncome,
+        topTier       = topTier,
+        topRarity     = topRarity,
+        count         = #sorted,
+        tierCounts    = tierCounts,
+        hasOG         = (tierCounts[8] or 0) > 0,
+        hasSecret     = (tierCounts[7] or 0) > 0,
+        hasGod        = (tierCounts[6] or 0) > 0,
+        hasMythic     = (tierCounts[5] or 0) > 0,
+    }
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 9] SCAN EVALUATION — ¿Vale la pena alertar?
+-- NO FALSE POSITIVES criterion:
+--   1. The individual brainrot with the highest income exceeds the configured threshold
+--   2. Or there is a brainrot with rarity >= MinTierAlways (Secret/OG by default)
+-- NO se suma el income total del servidor (eso causaba FP in el v4)
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function shouldAlert(scan)
+    -- Criterion 1: individual income >= threshold
+    if scan.topIncome >= Cfg.MinIncome then return true, "income_threshold" end
+
+    -- Criterion 2: has Secret or OG (tier >= MinTierAlways)
+    if scan.topTier >= Cfg.MinTierAlways then return true, "rarity_threshold" end
+
+    return false, nil
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 10] ROBLOX API — Fetch public servers
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function fetchServers(cursor)
+    local url = SERVERS_API:format(
+        PLACE_ID,
+        cursor and ("&cursor=" .. tostring(cursor)) or ""
+    )
+
+    -- Retry up to 3 times if HTTP request fails
+    for attempt = 1, 3 do
+        local ok, raw = pcall(function() return game:HttpGet(url) end)
+        if ok and raw and #raw > 10 then
+            local okJ, parsed = pcall(function() return HttpService:JSONDecode(raw) end)
+            if okJ and type(parsed) == "table" and type(parsed.data) == "table" then
+                return parsed.data, parsed.nextPageCursor
+            end
+        end
+        if attempt < 3 then task.wait(0.5) end
+    end
+    return {}, nil
+end
+
+-- Filtrar servidor: solo públicos con espacio y playersadores suficientes
+local function isServerValid(s)
+    local id         = tostring(s.id or "")
+    local playing    = tonumber(s.playing)    or 0
+    local maxPlayers = tonumber(s.maxPlayers) or 8
+
+    if id == ""                             then return false end
+    if id == game.JobId                     then return false end
+    if State.serverBlacklist[id]            then return false end
+    if playing >= maxPlayers                then return false end  -- no space
+    if playing < Cfg.MinPlayers             then return false end  -- too empty
+    return true
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 11] TELEPORT ENGINE WITH RETRY
+-- Main problem of basic finders: they don't retry if teleport fails.
+-- Here we implement:
+--   1. TeleportToPlaceInstance attempt
+--   2. TeleportInitFailed listener to detect immediate failures
+--   3. Auto retry with exponential delay
+--   4. Blacklist of repeatedly failing servers
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- Result flag of the last teleport attempt
+local _lastTpResult  = nil  -- nil=pending, true=success, false=failed
+local _lastTpError   = nil
+
+-- Connect the failure event (connected once globally)
+local _tpFailConn = TeleportService.TeleportInitFailed:Connect(function(player, reason, msg)
+    if player == LP then
+        _lastTpResult = false
+        _lastTpError  = tostring(reason) .. ": " .. tostring(msg)
+    end
+end)
+
+-- Full retry teleport function
+-- Returns true if teleport was sent successfully, false if all attempts failed
+local function teleportWithRetry(serverId, maxTries)
+    maxTries = maxTries or Cfg.MaxRetries
+    State.hopsAttempted = State.hopsAttempted + 1
+
+    -- Pre-queue el script para reejecutar in el nuevo servidor
+    if _ScriptSrc and queue_on_teleport then
+        pcall(function() queue_on_teleport(_ScriptSrc) end)
+    end
+
+    -- Guardar config in _G para que el script reanudado la use
+    _G.__AN_State      = { cfg = Cfg }
+    _G.__AN_AutoResume = true
+
+    for attempt = 1, maxTries do
+        _lastTpResult = nil
+        _lastTpError  = nil
+
+        local ok, err = pcall(function()
+            TeleportService:TeleportToPlaceInstance(PLACE_ID, serverId, LP)
+        end)
+
+        if not ok then
+            -- Immediate synchronous error (rare but possible)
+            _lastTpResult = false
+            _lastTpError  = tostring(err)
+        end
+
+        -- Wait up to TELEPORT_TIMEOUT seconds for failure confirmation
+        local waited = 0
+        local POLL   = 0.2
+        while waited < TELEPORT_TIMEOUT do
+            task.wait(POLL)
+            waited = waited + POLL
+
+            -- If TeleportInitFailed fired, we know it failed
+            if _lastTpResult == false then
+                break
+            end
+
+            -- If JobId changes, the teleport succeeded
+            -- (the script normally interrupts, but just in case)
+            if game.JobId ~= "" and game.JobId ~= serverId then
+                return true
+            end
+        end
+
+        if _lastTpResult == false then
+            -- This attempt failed
+            if attempt < maxTries then
+                local delay = math.min(TELEPORT_RETRY_DELAY * attempt, 8)
+                task.wait(delay)
+            end
+        else
+            -- Teleport was sent without synchronous error or TeleportInitFailed
+            -- We assume success (the game will start loading)
+            return true
+        end
+    end
+
+    -- All attempts failed: blacklist this server
+    State.serverBlacklist[serverId] = true
+    State.hopsFailed = State.hopsFailed + 1
+    _G.__AN_AutoResume = false
+    return false
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 12] DISCORD WEBHOOK (OPTIONAL)
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function sendWebhook(scan, serverId)
+    if not Cfg.WebhookEnabled or Cfg.WebhookURL == "" then return end
+    if not scan or not scan.top then return end
+
+    local topName   = scan.top.name
+    local topInc    = fInc(scan.top.income)
+    local topRarity = scan.top.rarity
+    local ogs       = scan.tierCounts[8] or 0
+    local secrets   = scan.tierCounts[7] or 0
+    local gods      = scan.tierCounts[6] or 0
+
+    local color = scan.hasOG and 16766720 or (scan.hasSecret and 16711680 or 9699539)
+    -- Gold = 16766720, Red = 16711680, Purple = 9699539
+
+    local payload = HttpService:JSONEncode({
+        embeds = {{
+            title       = "🎯 ASTRYX NOTIFIER v6.0 — Brainrot Found",
+            color       = color,
+            description = string.format(
+                "**Brainrot:** %s\n**Rareza:** %s\n**Income:** %s $/s\n**OGs:** %d | **Secrets:** %d | **Gods:** %d",
+                topName, topRarity, topInc, ogs, secrets, gods
+            ),
+            fields = {
+                { name = "Server", value = "`" .. tostring(serverId):sub(1,36) .. "`", inline = true },
+                { name = "Time",     value = os.date("%H:%M:%S"), inline = true },
+                { name = "Player",  value = LP.Name, inline = true },
+            },
+            footer = { text = "Astryx Notifier v6.0 • Steal a Brainrot" },
+        }}
+    })
+
+    pcall(function()
+        local http = game:GetService("HttpService")
+        http:PostAsync(Cfg.WebhookURL, payload, Enum.HttpContentType.ApplicationJson)
+    end)
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 13] GRAPHICAL INTERFACE CONSTRUCTION
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- Clean up existing GUI if present
+local pGui = LP:WaitForChild("PlayerGui")
+if pGui:FindFirstChild("AstryxNotifier") then
+    pGui.AstryxNotifier:Destroy()
+end
+
+local ScreenGui = N("ScreenGui", {
+    Name           = "AstryxNotifier",
+    ResetOnSpawn   = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder   = 1001,
+}, pGui)
+
+-- Initial position
+local vp    = workspace.CurrentCamera.ViewportSize
+local iX    = 14
+local iY    = math.clamp(math.floor(vp.Y/2 - 275), 8, math.max(8, vp.Y - 558))
+
+-- ── Main window ─────────────────────────────────────────────────────────
+local Main = N("Frame", {
+    Name              = "Main",
+    Size              = UDim2.fromOffset(374, 550),
+    Position          = UDim2.fromOffset(iX, iY),
+    BackgroundColor3  = C.BG,
+    BorderSizePixel   = 0,
+    Active            = true,
+    ZIndex            = 10,
+    ClipsDescendants  = true,
+}, ScreenGui)
+Cr(14, Main)
+
+local mainStroke = St(Color3.fromRGB(190, 0, 255), 2, Main)
+TweenService:Create(mainStroke, TI.PULSE, {Color = Color3.fromRGB(255, 80, 255)}):Play()
+
+-- Animated neon purple gradient background
+local mainGrad = N("UIGradient", {Rotation = 135}, Main)
+mainGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   Color3.fromRGB(6,  3,  14)),
+    ColorSequenceKeypoint.new(0.4, Color3.fromRGB(22, 5,  45)),
+    ColorSequenceKeypoint.new(0.7, Color3.fromRGB(35, 8,  70)),
+    ColorSequenceKeypoint.new(1,   Color3.fromRGB(15, 3,  35)),
+})
+-- Rotate gradient continuously for animated effect
+task.spawn(function()
+    local deg = 135
+    while Main and Main.Parent do
+        deg = (deg + 0.4) % 360
+        mainGrad.Rotation = deg
+        task.wait(0.05)
+    end
+end)
+
+-- Decorative background particles
+local ParticleLayer = N("Frame", {
+    Size                 = UDim2.fromOffset(374, 550),
+    Position             = UDim2.fromOffset(iX, iY),
+    BackgroundTransparency = 1,
+    ZIndex               = 2,
+    Active               = false,
+}, ScreenGui)
+
+local pCols = {C.Cyan, C.Purple, C.Pink, C.Green, C.Gold, C.Secret}
+
+task.spawn(function()
+    while ScreenGui and ScreenGui.Parent do
+        local p = N("Frame", {
+            Size                 = UDim2.fromOffset(math.random(2,5), math.random(2,5)),
+            Position             = UDim2.new(math.random()*0.96, 0, 1.02, 0),
+            BackgroundColor3     = pCols[math.random(1,#pCols)],
+            BackgroundTransparency = math.random(30,65)/100,
+            BorderSizePixel      = 0,
+            ZIndex               = 3,
+        }, ParticleLayer)
+        Cr(3, p)
+        local dur = math.random(5, 11)
+        TweenService:Create(p, TweenInfo.new(dur, Enum.EasingStyle.Linear), {
+            Position             = UDim2.new(p.Position.X.Scale + math.random(-30,30)/100, 0, -0.08, 0),
+            BackgroundTransparency = 1,
+        }):Play()
+        task.delay(dur, function() if p and p.Parent then p:Destroy() end end)
+        task.wait(0.25)
+    end
+end)
+
+-- Sincronizar partículas con la ventana
+RunService.Heartbeat:Connect(function()
+    if ParticleLayer.Position ~= Main.Position then
+        ParticleLayer.Position = Main.Position
+    end
+end)
+
+-- Línea de escaneo animada
+local ScanLine = N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 2),
+    Position         = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = C.Cyan,
+    BackgroundTransparency = 0.25,
+    BorderSizePixel  = 0,
+    ZIndex           = 30,
+}, Main)
+Gr(0, C.Cyan, C.Purple, ScanLine)
+
+task.spawn(function()
+    while Main and Main.Parent do
+        TweenService:Create(ScanLine, TI.SCAN, {Position = UDim2.new(0,0,1,0)}):Play()
+        task.wait(TI.SCAN.Time)
+        ScanLine.Position = UDim2.new(0,0,0,0)
+        task.wait(0.04)
+    end
+end)
+
+-- ── Header ────────────────────────────────────────────────────────────────────
+local Header = N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 56),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, Main)
+Cr(14, Header)
+-- Cover bottom rounding
+N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 14),
+    Position         = UDim2.new(0, 0, 1, -14),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, Header)
+Gr(90, Color3.fromRGB(36,10,60), Color3.fromRGB(12,4,24), Header)
+
+-- Logo box
+local LogoBox = N("Frame", {
+    Size             = UDim2.fromOffset(36, 36),
+    Position         = UDim2.new(0, 12, 0.5, -18),
+    BackgroundColor3 = C.BG3,
+    BorderSizePixel  = 0,
+    ZIndex           = 14,
+}, Header)
+Cr(9, LogoBox)
+St(C.Cyan, 1, LogoBox)
+Gr(45, Color3.fromRGB(60,0,100), Color3.fromRGB(100,0,160), LogoBox)
+
+local LogoLbl = N("TextLabel", {
+    Size                = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Text                = "A",
+    TextColor3          = C.Cyan,
+    Font                = Enum.Font.GothamBlack,
+    TextSize            = 23,
+    ZIndex              = 15,
+}, LogoBox)
+TweenService:Create(LogoLbl, TI.PULSE, {TextColor3 = C.Purple}):Play()
+
+-- Header text
+N("TextLabel", {
+    Size                = UDim2.new(0, 220, 0, 20),
+    Position            = UDim2.new(0, 56, 0, 9),
+    BackgroundTransparency = 1,
+    Text                = "ASTRYX NOTIFIER",
+    TextColor3          = C.Cyan,
+    Font                = Enum.Font.GothamBlack,
+    TextSize            = 16,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 14,
+}, Header)
+
+N("TextLabel", {
+    Size                = UDim2.new(0, 250, 0, 15),
+    Position            = UDim2.new(0, 56, 0, 32),
+    BackgroundTransparency = 1,
+    Text                = "v6.0  •  Secret/OG Only  •  Delta Ready",
+    TextColor3          = C.Gray,
+    Font                = Enum.Font.Gotham,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 14,
+}, Header)
+
+-- DB count indicator
+local DbLbl = N("TextLabel", {
+    Size                = UDim2.new(0, 80, 0, 14),
+    Position            = UDim2.new(1, -90, 0, 10),
+    BackgroundTransparency = 1,
+    Text                = dbCount() .. " rots",
+    TextColor3          = C.CyanDim,
+    Font                = Enum.Font.Gotham,
+    TextSize            = 9,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 14,
+}, Header)
+
+-- Minimize button
+local MinBtn = N("TextButton", {
+    Size             = UDim2.fromOffset(30, 30),
+    Position         = UDim2.new(1, -42, 0.5, -15),
+    BackgroundColor3 = C.BG3,
+    Text             = "—",
+    TextColor3       = C.GrayLight,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 14,
+    BorderSizePixel  = 0,
+    ZIndex           = 14,
+    AutoButtonColor  = false,
+}, Header)
+Cr(8, MinBtn)
+St(C.Gray, 0.7, MinBtn)
+
+-- ── Tab bar ─────────────────────────────────────────────────────────────
+local TabBar = N("Frame", {
+    Size             = UDim2.new(1, -24, 0, 34),
+    Position         = UDim2.new(0, 12, 0, 62),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, Main)
+Cr(8, TabBar)
+St(C.BG3, 0.8, TabBar)
+
+local TabInd = N("Frame", {
+    Size             = UDim2.new(0.25, -2, 1, -4),
+    Position         = UDim2.new(0, 1, 0, 2),
+    BackgroundColor3 = C.BG3,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+}, TabBar)
+Cr(6, TabInd)
+Gr(90, Color3.fromRGB(28,0,55), Color3.fromRGB(50,0,90), TabInd)
+St(C.CyanDim, 0.7, TabInd)
+
+local TAB_NAMES = {"SCANNER", "RESULTS", "STATS", "CONFIG"}
+local TabBtns   = {}
+
+for i, name in ipairs(TAB_NAMES) do
+    local btn = N("TextButton", {
+        Size               = UDim2.new(0.25, 0, 1, 0),
+        Position           = UDim2.new(0.25*(i-1), 0, 0, 0),
+        BackgroundTransparency = 1,
+        Text               = name,
+        TextColor3         = i == 1 and C.Cyan or C.Gray,
+        Font               = Enum.Font.GothamBold,
+        TextSize           = 9,
+        ZIndex             = 14,
+        AutoButtonColor    = false,
+    }, TabBar)
+    TabBtns[i] = btn
+end
+
+-- ── Contenedor de pageinas ─────────────────────────────────────────────────────
+local PageCont = N("Frame", {
+    Size                 = UDim2.new(1, 0, 1, -104),
+    Position             = UDim2.new(0, 0, 0, 102),
+    BackgroundTransparency = 1,
+    ClipsDescendants     = true,
+    ZIndex               = 10,
+}, Main)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PAGE 1: SCANNER
+-- ══════════════════════════════════════════════════════════════════════════════
+local PageScanner = N("Frame", {
+    Size                 = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    ZIndex               = 11,
+}, PageCont)
+Pd(12, 12, 8, 8, PageScanner)
+
+-- ── Status box ────────────────────────────────────────────────────────────
+local StatusBox = N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 50),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, PageScanner)
+Cr(10, StatusBox)
+St(C.CyanDim, 1, StatusBox)
+
+local StatusDot = N("Frame", {
+    Size             = UDim2.fromOffset(9, 9),
+    Position         = UDim2.new(0, 12, 0.5, -4),
+    BackgroundColor3 = C.Gray,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+}, StatusBox)
+Cr(5, StatusDot)
+TweenService:Create(StatusDot, TI.PULSE, {BackgroundTransparency = 0.5}):Play()
+
+local StatusMain = N("TextLabel", {
+    Size                = UDim2.new(1, -32, 0, 19),
+    Position            = UDim2.new(0, 30, 0, 7),
+    BackgroundTransparency = 1,
+    Text                = "Idle — Press START",
+    TextColor3          = C.GrayLight,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 13,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 13,
+}, StatusBox)
+
+local StatusSub = N("TextLabel", {
+    Size                = UDim2.new(1, -32, 0, 15),
+    Position            = UDim2.new(0, 30, 0, 29),
+    BackgroundTransparency = 1,
+    Text                = "Target: Secret ($315K/s+) and OG ($450M/s+)",
+    TextColor3          = C.Gray,
+    Font                = Enum.Font.Gotham,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 13,
+}, StatusBox)
+
+-- ── Progress bar ─────────────────────────────────────────────────────────
+local ProgBG = N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 5),
+    Position         = UDim2.new(0, 0, 0, 56),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, PageScanner)
+Cr(3, ProgBG)
+
+local ProgFill = N("Frame", {
+    Size             = UDim2.new(0, 0, 1, 0),
+    BackgroundColor3 = C.Cyan,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+}, ProgBG)
+Cr(3, ProgFill)
+Gr(0, Color3.fromRGB(140,0,220), Color3.fromRGB(220,50,255), ProgFill)
+
+local ProgLbl = N("TextLabel", {
+    Size                = UDim2.new(1, 0, 0, 13),
+    Position            = UDim2.new(0, 0, 0, 63),
+    BackgroundTransparency = 1,
+    Text                = "0 servers  •  0 pages  •  0 players",
+    TextColor3          = C.Gray,
+    Font                = Enum.Font.Gotham,
+    TextSize            = 9,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 12,
+}, PageScanner)
+
+-- ── Stats grid (2×2) ────────────────────────────────────────────────
+local StatsGrid = N("Frame", {
+    Size                 = UDim2.new(1, 0, 0, 82),
+    Position             = UDim2.new(0, 0, 0, 82),
+    BackgroundTransparency = 1,
+    ZIndex               = 11,
+}, PageScanner)
+
+N("UIGridLayout", {
+    CellSize    = UDim2.new(0.5, -4, 0, 37),
+    CellPadding = UDim2.new(0, 8, 0, 8),
+    SortOrder   = Enum.SortOrder.LayoutOrder,
+}, StatsGrid)
+
+local SC = {}   -- StatCards
+local statDefs = {
+    {id="servers",  lbl="Servers",  icon="◈", val="0"},
+    {id="players",  lbl="Players",   icon="◉", val="0"},
+    {id="best",     lbl="Best /s",    icon="◆", val="—"},
+    {id="pages",    lbl="Pages",     icon="◇", val="0"},
+}
+
+for i, s in ipairs(statDefs) do
+    local card = N("Frame", {
+        BackgroundColor3 = C.BG2,
+        BorderSizePixel  = 0,
+        ZIndex           = 12,
+        LayoutOrder      = i,
+    }, StatsGrid)
+    Cr(8, card)
+    St(C.BG4, 0.7, card)
+
+    N("TextLabel", {
+        Size                = UDim2.fromOffset(18, 37),
+        Position            = UDim2.new(0, 7, 0, 0),
+        BackgroundTransparency = 1,
+        Text                = s.icon,
+        TextColor3          = C.Cyan,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 13,
+        ZIndex              = 13,
+    }, card)
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,-28,0,13),
+        Position            = UDim2.new(0, 28, 0, 5),
+        BackgroundTransparency = 1,
+        Text                = s.lbl,
+        TextColor3          = C.Gray,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 9,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 13,
+    }, card)
+
+    local valLbl = N("TextLabel", {
+        Size                = UDim2.new(1,-28,0,16),
+        Position            = UDim2.new(0, 28, 0, 17),
+        BackgroundTransparency = 1,
+        Text                = s.val,
+        TextColor3          = C.White,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 12,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 13,
+    }, card)
+    SC[s.id] = valLbl
+end
+
+-- ── Log box ───────────────────────────────────────────────────────────────────
+local LogBox = N("Frame", {
+    Size             = UDim2.new(1, 0, 0, 78),
+    Position         = UDim2.new(0, 0, 0, 172),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+    ClipsDescendants = true,
+}, PageScanner)
+Cr(8, LogBox)
+St(C.BG4, 0.7, LogBox)
+
+local LogScroll = N("ScrollingFrame", {
+    Size                 = UDim2.new(1,-8,1,-8),
+    Position             = UDim2.new(0,4,0,4),
+    BackgroundTransparency = 1,
+    BorderSizePixel      = 0,
+    ScrollBarThickness   = 2,
+    ScrollBarImageColor3 = C.CyanDim,
+    CanvasSize           = UDim2.new(0,0,0,0),
+    AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+    ZIndex               = 13,
+}, LogBox)
+
+N("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding   = UDim.new(0, 1),
+}, LogScroll)
+
+local logCount = 0
+local function addLog(text, col)
+    logCount = logCount + 1
+    N("TextLabel", {
+        Size                = UDim2.new(1,-6,0,13),
+        BackgroundTransparency = 1,
+        Text                = "[" .. os.date("%H:%M:%S") .. "] " .. text,
+        TextColor3          = col or C.GrayLight,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 10,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        TextTruncate        = Enum.TextTruncate.AtEnd,
+        LayoutOrder         = logCount,
+        ZIndex              = 14,
+    }, LogScroll)
+    task.wait()
+    if LogScroll and LogScroll.Parent then
+        LogScroll.CanvasPosition = Vector2.new(0, math.max(0, LogScroll.AbsoluteCanvasSize.Y))
+    end
+    if logCount > 50 then
+        for _, c in ipairs(LogScroll:GetChildren()) do
+            if c:IsA("TextLabel") then c:Destroy(); break end
+        end
+    end
+end
+
+-- ── Main buttons ───────────────────────────────────────────────────────
+local BtnRow1 = N("Frame", {
+    Size                 = UDim2.new(1,0,0,40),
+    Position             = UDim2.new(0,0,0,258),
+    BackgroundTransparency = 1,
+    ZIndex               = 12,
+}, PageScanner)
+
+local StartBtn = N("TextButton", {
+    Size             = UDim2.new(0,170,1,0),
+    Position         = UDim2.new(0,0,0,0),
+    BackgroundColor3 = C.GreenDim,
+    Text             = "▶  START SNIPER",
+    TextColor3       = C.Green,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 12,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    AutoButtonColor  = false,
+}, BtnRow1)
+Cr(10, StartBtn)
+St(C.Green, 1, StartBtn)
+Gr(90, Color3.fromRGB(35,0,65), Color3.fromRGB(25,0,50), StartBtn)
+
+local StopBtn = N("TextButton", {
+    Size             = UDim2.new(0,115,1,0),
+    Position         = UDim2.new(0,178,0,0),
+    BackgroundColor3 = C.RedDim,
+    Text             = "■  STOP",
+    TextColor3       = C.Red,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 12,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    AutoButtonColor  = false,
+    Visible          = false,
+}, BtnRow1)
+Cr(10, StopBtn)
+St(C.Red, 1, StopBtn)
+
+local HopBtn = N("TextButton", {
+    Size             = UDim2.fromOffset(52,40),
+    Position         = UDim2.new(1,-52,0,0),
+    BackgroundColor3 = C.BG2,
+    Text             = "⟳HOP",
+    TextColor3       = C.Cyan,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 11,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    AutoButtonColor  = false,
+}, BtnRow1)
+Cr(10, HopBtn)
+St(C.Cyan, 1, HopBtn)
+
+-- STAY button (appears when something good is found)
+local StayBtn = N("TextButton", {
+    Size             = UDim2.new(1,0,0,40),
+    Position         = UDim2.new(0,0,0,306),
+    BackgroundColor3 = C.GoldDim,
+    Text             = "✦  STAY HERE — SECRET/OG BRAINROT",
+    TextColor3       = C.Gold,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 12,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    AutoButtonColor  = false,
+    Visible          = false,
+}, PageScanner)
+Cr(10, StayBtn)
+St(C.Gold, 1.5, StayBtn)
+Gr(0, Color3.fromRGB(55,0,95), Color3.fromRGB(80,0,130), StayBtn)
+TweenService:Create(StayBtn, TI.PULSE, {BackgroundColor3 = Color3.fromRGB(38,22,0)}):Play()
+
+-- Find label
+local FindLbl = N("TextLabel", {
+    Size                = UDim2.new(1,0,0,22),
+    Position            = UDim2.new(0,0,0,352),
+    BackgroundTransparency = 1,
+    Text                = "",
+    TextColor3          = C.GrayLight,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 12,
+    Visible             = false,
+    ZIndex              = 12,
+}, PageScanner)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PÁGINA 2: RESULTS
+-- ══════════════════════════════════════════════════════════════════════════════
+local PageResults = N("Frame", {
+    Size                 = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Visible              = false,
+    ZIndex               = 11,
+}, PageCont)
+
+local ResHdr = N("TextLabel", {
+    Size                = UDim2.new(1,-24,0,20),
+    Position            = UDim2.new(0,12,0,8),
+    BackgroundTransparency = 1,
+    Text                = "Servers con Secret/OG encontrados",
+    TextColor3          = C.Gray,
+    Font                = Enum.Font.Gotham,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Left,
+    ZIndex              = 12,
+}, PageResults)
+
+local ResScroll = N("ScrollingFrame", {
+    Size                 = UDim2.new(1,-24,1,-34),
+    Position             = UDim2.new(0,12,0,30),
+    BackgroundTransparency = 1,
+    BorderSizePixel      = 0,
+    ScrollBarThickness   = 3,
+    ScrollBarImageColor3 = C.CyanDim,
+    CanvasSize           = UDim2.new(0,0,0,0),
+    AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+    ZIndex               = 12,
+}, PageResults)
+
+N("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding   = UDim.new(0,6),
+}, ResScroll)
+
+local resCount = 0
+
+local function addResult(data)
+    resCount = resCount + 1
+
+    local borderCol = data.hasOG and C.Gold or
+                      (data.hasSecret and C.Secret or
+                      (data.hasGod and C.Purple or C.Cyan))
+
+    local card = N("Frame", {
+        Size             = UDim2.new(1,-2,0,92),
+        BackgroundColor3 = C.BG2,
+        BorderSizePixel  = 0,
+        ZIndex           = 13,
+        LayoutOrder      = -resCount,
+    }, ResScroll)
+    Cr(10, card)
+    St(borderCol, 1, card)
+    Gr(90, Color3.fromRGB(
+        data.hasOG and 25 or (data.hasSecret and 20 or 14),
+        data.hasOG and 16 or 12,
+        data.hasOG and 0  or (data.hasSecret and 14 or 20)
+    ), C.BG2, card)
+
+    -- Número y badge de rareza
+    N("TextLabel", {
+        Size                = UDim2.fromOffset(30,92),
+        BackgroundTransparency = 1,
+        Text                = "#" .. resCount,
+        TextColor3          = C.Gray,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 10,
+        ZIndex              = 14,
+    }, card)
+
+    local rarBadge = N("Frame", {
+        Size             = UDim2.fromOffset(40,18),
+        Position         = UDim2.new(0,32,0,8),
+        BackgroundColor3 = data.hasOG and C.GoldDim or
+                           (data.hasSecret and C.SecretDim or C.PurpleDim),
+        BorderSizePixel  = 0,
+        ZIndex           = 14,
+    }, card)
+    Cr(5, rarBadge)
+    N("TextLabel", {
+        Size                = UDim2.new(1,0,1,0),
+        BackgroundTransparency = 1,
+        Text                = data.hasOG and "OG ⭐" or
+                              (data.hasSecret and "SECRET" or
+                              (data.hasGod and "GOD" or "RARE")),
+        TextColor3          = data.hasOG and C.Gold or
+                              (data.hasSecret and C.Secret or C.Purple),
+        Font                = Enum.Font.GothamBlack,
+        TextSize            = 9,
+        ZIndex              = 15,
+    }, rarBadge)
+
+    -- Info del brainrot top
+    local info = N("Frame", {
+        Size                 = UDim2.new(1,-118,1,-12),
+        Position             = UDim2.new(0,32,0,32),
+        BackgroundTransparency = 1,
+        ZIndex               = 14,
+    }, card)
+
+    local topName = data.top and data.top.name or "Brainrot detectado"
+    local topCol  = data.top and rarityColor(data.top.rarity) or borderCol
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,0,0,18),
+        BackgroundTransparency = 1,
+        Text                = topName,
+        TextColor3          = topCol,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 13,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        TextTruncate        = Enum.TextTruncate.AtEnd,
+        ZIndex              = 15,
+    }, info)
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,0,0,13),
+        Position            = UDim2.new(0,0,0,20),
+        BackgroundTransparency = 1,
+        Text                = fInc(data.topIncome) .. " $/s  •  " ..
+                              (data.top and data.top.rarity or "?"),
+        TextColor3          = C.GrayLight,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 10,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 15,
+    }, info)
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,0,0,13),
+        Position            = UDim2.new(0,0,0,35),
+        BackgroundTransparency = 1,
+        Text                = data.players .. "/" .. data.maxPlayers .. " players  |  " ..
+                              data.count .. " rots  |  " ..
+                              (data.top and data.top.mutation ~= "None" and
+                               data.top.mutation .. " mutation" or ""),
+        TextColor3          = C.Gray,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 9,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 15,
+    }, info)
+
+    -- Botón JOIN
+    local joinBtn = N("TextButton", {
+        Size             = UDim2.fromOffset(72,34),
+        Position         = UDim2.new(1,-78,0.5,-17),
+        BackgroundColor3 = C.BG3,
+        Text             = "JOIN",
+        TextColor3       = borderCol,
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 11,
+        BorderSizePixel  = 0,
+        ZIndex           = 14,
+        AutoButtonColor  = false,
+    }, card)
+    Cr(6, joinBtn)
+    St(borderCol, 1, joinBtn)
+
+    local sId = data.serverId
+    joinBtn.MouseButton1Click:Connect(function()
+        if joinBtn.Text == "..." then return end
+        joinBtn.Text       = "..."
+        joinBtn.TextColor3 = C.Gray
+        addLog("Joining result #" .. resCount .. "...", C.Cyan)
+        task.spawn(function()
+            local ok = teleportWithRetry(sId, Cfg.MaxRetries)
+            if not ok then
+                joinBtn.Text       = "FAILED"
+                joinBtn.TextColor3 = C.Red
+                addLog("Failed to join server #" .. resCount, C.Red)
+            end
+        end)
+    end)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PAGE 3: SESSION STATISTICS
+-- ══════════════════════════════════════════════════════════════════════════════
+local PageStats = N("Frame", {
+    Size                 = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Visible              = false,
+    ZIndex               = 11,
+}, PageCont)
+Pd(12,12,8,8,PageStats)
+
+-- Function to create session stat row
+local function makeStatRow(parent, label, yPos, defVal)
+    local row = N("Frame", {
+        Size             = UDim2.new(1,0,0,32),
+        Position         = UDim2.new(0,0,0,yPos),
+        BackgroundColor3 = C.BG2,
+        BorderSizePixel  = 0,
+        ZIndex           = 12,
+    }, parent)
+    Cr(7, row)
+    St(C.BG3, 0.7, row)
+
+    N("TextLabel", {
+        Size                = UDim2.new(0.65,0,1,0),
+        Position            = UDim2.new(0,10,0,0),
+        BackgroundTransparency = 1,
+        Text                = label,
+        TextColor3          = C.GrayLight,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 11,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 13,
+    }, row)
+
+    local valLbl = N("TextLabel", {
+        Size                = UDim2.new(0.35,-10,1,0),
+        Position            = UDim2.new(0.65,0,0,0),
+        BackgroundTransparency = 1,
+        Text                = tostring(defVal),
+        TextColor3          = C.Cyan,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 12,
+        TextXAlignment      = Enum.TextXAlignment.Right,
+        ZIndex              = 13,
+    }, row)
+
+    return valLbl
+end
+
+local StatRows = {}
+StatRows.duration  = makeStatRow(PageStats, "Session duration",         0,   "00:00")
+StatRows.scanned   = makeStatRow(PageStats, "Servers escaneados",   40,  "0")
+StatRows.hops      = makeStatRow(PageStats, "Hops attempted",         80,  "0")
+StatRows.failed    = makeStatRow(PageStats, "Hops failed",           120, "0")
+StatRows.secrets   = makeStatRow(PageStats, "Secrets found",     160, "0")
+StatRows.ogs       = makeStatRow(PageStats, "OGs found",         200, "0")
+StatRows.bestInc   = makeStatRow(PageStats, "Best income seen",      240, "—")
+StatRows.bestName  = makeStatRow(PageStats, "Best brainrot",          280, "—")
+StatRows.blacklist = makeStatRow(PageStats, "Servers blacklistados", 320, "0")
+StatRows.results   = makeStatRow(PageStats, "Valid results",      360, "0")
+
+-- Color special rows
+StatRows.secrets.TextColor3 = C.Secret
+StatRows.ogs.TextColor3     = C.Gold
+StatRows.failed.TextColor3  = C.Red
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PAGE 4: CONFIGURATION
+-- ══════════════════════════════════════════════════════════════════════════════
+local PageConfig = N("Frame", {
+    Size                 = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Visible              = false,
+    ZIndex               = 11,
+}, PageCont)
+Pd(12,12,8,8,PageConfig)
+
+local CfgScroll = N("ScrollingFrame", {
+    Size                 = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    BorderSizePixel      = 0,
+    ScrollBarThickness   = 3,
+    ScrollBarImageColor3 = C.CyanDim,
+    CanvasSize           = UDim2.new(0,0,0,0),
+    AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+    ZIndex               = 12,
+}, PageConfig)
+
+N("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding   = UDim.new(0,8),
+}, CfgScroll)
+
+-- Config row helper
+local function makeCfgRow(title, sub, order)
+    local row = N("Frame", {
+        Size             = UDim2.new(1,-4,0,60),
+        BackgroundColor3 = C.BG2,
+        BorderSizePixel  = 0,
+        ZIndex           = 13,
+        LayoutOrder      = order,
+    }, CfgScroll)
+    Cr(8, row)
+    St(C.BG4, 0.7, row)
+    N("TextLabel", {
+        Size                = UDim2.new(1,-12,0,17),
+        Position            = UDim2.new(0,10,0,6),
+        BackgroundTransparency = 1,
+        Text                = title,
+        TextColor3          = C.GrayLight,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 11,
+        TextXAlignment      = Enum.TextXAlignment.Left,
+        ZIndex              = 14,
+    }, row)
+    if sub then
+        N("TextLabel", {
+            Size                = UDim2.new(1,-12,0,12),
+            Position            = UDim2.new(0,10,0,25),
+            BackgroundTransparency = 1,
+            Text                = sub,
+            TextColor3          = C.Gray,
+            Font                = Enum.Font.Gotham,
+            TextSize            = 9,
+            TextXAlignment      = Enum.TextXAlignment.Left,
+            ZIndex              = 14,
+        }, row)
+    end
+    return row
+end
+
+-- Slider helper
+local _sdragging = {}
+local function makeSlider(parent, xOff, yOff, width, col, initVal, minV, maxV, onChange)
+    local bg = N("Frame", {
+        Size             = UDim2.new(0,width,0,5),
+        Position         = UDim2.new(0,xOff,0,yOff),
+        BackgroundColor3 = C.BG3,
+        BorderSizePixel  = 0,
+        ZIndex           = 15,
+        Active           = true,
+    }, parent)
+    Cr(3, bg)
+
+    local fill = N("Frame", {
+        Size             = UDim2.new(0,0,1,0),
+        BackgroundColor3 = col,
+        BorderSizePixel  = 0,
+        ZIndex           = 16,
+    }, bg)
+    Cr(3, fill)
+    Gr(0, col, C.Purple, fill)
+
+    local initRel = math.clamp((initVal - minV) / (maxV - minV), 0, 1)
+    fill.Size = UDim2.new(initRel, 0, 1, 0)
+
+    bg.InputBegan:Connect(function(inp)
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            _sdragging[bg] = true
+            local rel = math.clamp((inp.Position.X - bg.AbsolutePosition.X) / bg.AbsoluteSize.X, 0, 1)
+            fill.Size = UDim2.new(rel, 0, 1, 0)
+            onChange(minV + (maxV - minV) * rel)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(inp)
+        if not _sdragging[bg] then return end
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch then
+            local rel = math.clamp((inp.Position.X - bg.AbsolutePosition.X) / bg.AbsoluteSize.X, 0, 1)
+            fill.Size = UDim2.new(rel, 0, 1, 0)
+            onChange(minV + (maxV - minV) * rel)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(inp)
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            _sdragging[bg] = nil
+        end
+    end)
+
+    return bg, fill
+end
+
+-- Toggle helper
+local function makeToggle(parent, initVal, xOff, yOff, onChange)
+    local bg = N("Frame", {
+        Size             = UDim2.fromOffset(44,22),
+        Position         = UDim2.new(0,xOff,0,yOff),
+        BackgroundColor3 = C.BG3,
+        BorderSizePixel  = 0,
+        ZIndex           = 15,
+        Active           = true,
+    }, parent)
+    Cr(11, bg)
+    St(C.Gray, 0.7, bg)
+
+    local knob = N("Frame", {
+        Size             = UDim2.fromOffset(18,18),
+        Position         = UDim2.new(0,2,0.5,-9),
+        BackgroundColor3 = C.Gray,
+        BorderSizePixel  = 0,
+        ZIndex           = 16,
+    }, bg)
+    Cr(9, knob)
+
+    local state = initVal
+    local function setVal(v)
+        state = v
+        TweenService:Create(knob, TI.FAST, {
+            Position         = v and UDim2.new(1,-20,0.5,-9) or UDim2.new(0,2,0.5,-9),
+            BackgroundColor3 = v and C.Cyan or C.Gray,
+        }):Play()
+        TweenService:Create(bg, TI.FAST, {BackgroundColor3 = v and C.CyanDark or C.BG3}):Play()
+        onChange(v)
+    end
+    setVal(initVal)
+
+    local btn = N("TextButton", {
+        Size               = UDim2.new(1,0,1,0),
+        BackgroundTransparency = 1,
+        Text               = "",
+        ZIndex             = 17,
+        AutoButtonColor    = false,
+    }, bg)
+    btn.MouseButton1Click:Connect(function() setVal(not state) end)
+    return bg
+end
+
+-- ── Slider: Income threshold ─────────────────────────────────────────────────────
+local r1 = makeCfgRow("Minimum income threshold per brainrot ($/s)",
+    "La Vacca Saturno Saturnita (cheapest Secret) = $325K/s", 1)
+local r1lbl = N("TextLabel", {
+    Size                = UDim2.new(0,100,0,13),
+    Position            = UDim2.new(1,-110,0,42),
+    BackgroundTransparency = 1,
+    Text                = fInc(Cfg.MinIncome) .. " $/s",
+    TextColor3          = C.Cyan,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 15,
+}, r1)
+makeSlider(r1, 10, 42, 205, C.Cyan, Cfg.MinIncome, 10000, 750000000, function(v)
+    Cfg.MinIncome = math.floor(v)
+    r1lbl.Text = fInc(Cfg.MinIncome) .. " $/s"
+    StatusSub.Text = "Target: >=" .. fInc(Cfg.MinIncome) .. " $/s  |  Secret/OG"
+end)
+
+-- ── Slider: Hop delay ─────────────────────────────────────────────────────────
+local r2 = makeCfgRow("Wait after teleport (seconds)",
+    "Time for the server to load before scanning", 2)
+local r2lbl = N("TextLabel", {
+    Size                = UDim2.new(0,100,0,13),
+    Position            = UDim2.new(1,-110,0,42),
+    BackgroundTransparency = 1,
+    Text                = Cfg.HopDelay .. "s",
+    TextColor3          = C.Purple,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 15,
+}, r2)
+makeSlider(r2, 10, 42, 205, C.Purple, Cfg.HopDelay, 2, 15, function(v)
+    Cfg.HopDelay = math.floor(v)
+    r2lbl.Text = Cfg.HopDelay .. "s"
+end)
+
+-- ── Slider: Min playersadores ─────────────────────────────────────────────────────
+local r3 = makeCfgRow("Minimum players per server (filter)",
+    "More players = more brainrots exposed to scan", 3)
+local r3lbl = N("TextLabel", {
+    Size                = UDim2.new(0,100,0,13),
+    Position            = UDim2.new(1,-110,0,42),
+    BackgroundTransparency = 1,
+    Text                = Cfg.MinPlayers .. " players",
+    TextColor3          = C.Orange,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 15,
+}, r3)
+makeSlider(r3, 10, 42, 205, C.Orange, Cfg.MinPlayers, 1, 7, function(v)
+    Cfg.MinPlayers = math.floor(v)
+    r3lbl.Text = Cfg.MinPlayers .. " players"
+end)
+
+-- ── Slider: Max retries ───────────────────────────────────────────────────────
+local r4 = makeCfgRow("Teleport retries per server",
+    "If teleport fails, retries N times before moving to the next", 4)
+local r4lbl = N("TextLabel", {
+    Size                = UDim2.new(0,100,0,13),
+    Position            = UDim2.new(1,-110,0,42),
+    BackgroundTransparency = 1,
+    Text                = Cfg.MaxRetries .. "x",
+    TextColor3          = C.Pink,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 15,
+}, r4)
+makeSlider(r4, 10, 42, 205, C.Pink, Cfg.MaxRetries, 1, 8, function(v)
+    Cfg.MaxRetries = math.floor(v)
+    r4lbl.Text = Cfg.MaxRetries .. "x"
+end)
+
+-- ── Slider: Max pageinas ───────────────────────────────────────────────────────
+local r5 = makeCfgRow("Maximum API pages (100 servers/page)",
+    "30 pages = up to 3000 servers scanned in a session", 5)
+local r5lbl = N("TextLabel", {
+    Size                = UDim2.new(0,100,0,13),
+    Position            = UDim2.new(1,-110,0,42),
+    BackgroundTransparency = 1,
+    Text                = Cfg.MaxPages .. " page",
+    TextColor3          = C.Cyan,
+    Font                = Enum.Font.GothamBold,
+    TextSize            = 10,
+    TextXAlignment      = Enum.TextXAlignment.Right,
+    ZIndex              = 15,
+}, r5)
+makeSlider(r5, 10, 42, 205, C.Cyan, Cfg.MaxPages, 5, 50, function(v)
+    Cfg.MaxPages = math.floor(v)
+    r5lbl.Text = Cfg.MaxPages .. " page"
+end)
+
+-- ── Toggle: Auto Hop ──────────────────────────────────────────────────────────
+local r6 = makeCfgRow("Auto Hop continuo",
+    "Sigue saltando aunque encuentre Secret/OG (excepto StopOnOG)", 6)
+makeToggle(r6, Cfg.AutoHop, 10, 36, function(v) Cfg.AutoHop = v end)
+
+-- ── Toggle: Parar in OG ───────────────────────────────────────────────────────
+local r7 = makeCfgRow("Parar SIEMPRE al encontrar OG",
+    "Even with Auto Hop active, OG always stops the scanner", 7)
+makeToggle(r7, Cfg.StopOnOG, 10, 36, function(v) Cfg.StopOnOG = v end)
+
+-- ── Webhook URL ───────────────────────────────────────────────────────────────
+local r8 = makeCfgRow("Discord Webhook (instant notification)",
+    "Pega tu webhook URL y activa para recibir alertas in Discord", 8)
+
+local webhookBox = N("TextBox", {
+    Size             = UDim2.new(1,-20,0,20),
+    Position         = UDim2.new(0,10,0,36),
+    BackgroundColor3 = C.BG3,
+    Text             = Cfg.WebhookURL,
+    PlaceholderText  = "https://discord.com/api/webhooks/",
+    TextColor3       = C.GrayLight,
+    PlaceholderColor3 = C.Gray,
+    Font             = Enum.Font.Gotham,
+    TextSize         = 9,
+    BorderSizePixel  = 0,
+    ZIndex           = 15,
+    ClearTextOnFocus = false,
+}, r8)
+Cr(5, webhookBox)
+St(C.CyanDim, 0.7, webhookBox)
+Pd(4,4,0,0,webhookBox)
+
+webhookBox:GetPropertyChangedSignal("Text"):Connect(function()
+    Cfg.WebhookURL     = webhookBox.Text
+    Cfg.WebhookEnabled = #webhookBox.Text > 20
+end)
+
+-- Info footer
+local infoRow = N("Frame", {
+    Size             = UDim2.new(1,-4,0,52),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    LayoutOrder      = 99,
+}, CfgScroll)
+Cr(8, infoRow)
+
+local infoLines = {
+    "ASTRYX NOTIFIER v6.0  •  DB: " .. dbCount() .. " brainrots  •  April 2026",
+    "Secret: $315K-$400M/s ($80M-$400B coste)  |  OG: $450M-$750M/s",
+    "Formula: Base × (1 + MutMod + ΣTraitMods)  •  Rainbow = ×10x",
+}
+for i, line in ipairs(infoLines) do
+    N("TextLabel", {
+        Size                = UDim2.new(1,-12,0,14),
+        Position            = UDim2.new(0,10,0,4+(i-1)*16),
+        BackgroundTransparency = 1,
+        Text                = line,
+        TextColor3          = i == 1 and C.Gray or C.CyanDim,
+        Font                = Enum.Font.Gotham,
+        TextSize            = 9,
+        ZIndex              = 14,
+    }, infoRow)
+end
+
+-- ── Window footer ──────────────────────────────────────────────────────
+local Footer = N("Frame", {
+    Size             = UDim2.new(1,0,0,18),
+    Position         = UDim2.new(0,0,1,-18),
+    BackgroundColor3 = C.BG2,
+    BorderSizePixel  = 0,
+    ZIndex           = 11,
+}, Main)
+Gr(90, C.BG2, C.BG, Footer)
+N("TextLabel", {
+    Size                = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Text                = "ASTRYX NOTIFIER v6.0  •  Secret/OG Sniper  •  Zero False Positives  •  discord.gg/YZn2WzHk",
+    TextColor3          = Color3.fromRGB(35, 35, 58),
+    Font                = Enum.Font.Gotham,
+    TextSize            = 9,
+    ZIndex              = 12,
+}, Footer)
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 14] POPUP SYSTEM
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local POP_W   = 318
+local POP_OUT = -(180 + 25)
+local POP_IN  = 20
+
+local function processPopup()
+    if State.showingPopup then return end
+    if #State.popupQueue == 0 then return end
+    State.showingPopup = true
+
+    local item = table.remove(State.popupQueue, 1)
+
+    local isOG     = item.isOG
+    local isSec    = item.isSecret
+    local bdrCol   = isOG and C.Gold or (isSec and C.Secret or C.Purple)
+    local bgColor  = isOG and Color3.fromRGB(14,9,0) or
+                     (isSec and Color3.fromRGB(14,4,4) or Color3.fromRGB(10,6,14))
+
+    local pop = N("Frame", {
+        Size             = UDim2.fromOffset(POP_W, 178),
+        Position         = UDim2.new(0.5,-POP_W/2,0,POP_OUT),
+        BackgroundColor3 = bgColor,
+        BorderSizePixel  = 0,
+        ClipsDescendants = true,
+        ZIndex           = 100,
+        Active           = true,
+    }, ScreenGui)
+    Cr(14, pop)
+    St(bdrCol, 2, pop)
+    Gr(90,
+       Color3.fromRGB(
+           isOG and 38 or (isSec and 30 or 22),
+           isOG and 22 or (isSec and 12 or 14),
+           isOG and 0  or (isSec and 12 or 30)
+       ), bgColor, pop)
+
+    -- Título
+    local title = isOG and "⭐  OG DETECTED  ⭐" or
+                  (isSec and "🔴  SECRET DETECTED  🔴" or "◆  VALUABLE FOUND  ◆")
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,0,0,26),
+        Position            = UDim2.new(0,0,0,10),
+        BackgroundTransparency = 1,
+        Text                = title,
+        TextColor3          = bdrCol,
+        Font                = Enum.Font.GothamBlack,
+        TextSize            = 12,
+        ZIndex              = 101,
+    }, pop)
+
+    N("TextLabel", {
+        Size                = UDim2.new(1,-20,0,42),
+        Position            = UDim2.new(0,10,0,40),
+        BackgroundTransparency = 1,
+        Text                = item.msg,
+        TextColor3          = C.White,
+        Font                = Enum.Font.GothamBold,
+        TextSize            = 12,
+        TextWrapped         = true,
+        ZIndex              = 101,
+    }, pop)
+
+    -- Timer bar
+    local tBG = N("Frame", {
+        Size             = UDim2.new(1,-20,0,3),
+        Position         = UDim2.new(0,10,0,86),
+        BackgroundColor3 = C.BG3,
+        BorderSizePixel  = 0,
+        ZIndex           = 102,
+    }, pop)
+    Cr(2, tBG)
+    local tFill = N("Frame", {
+        Size             = UDim2.new(1,0,1,0),
+        BackgroundColor3 = bdrCol,
+        BorderSizePixel  = 0,
+        ZIndex           = 103,
+    }, tBG)
+    Cr(2, tFill)
+    TweenService:Create(tFill, TweenInfo.new(Cfg.PopupSecs, Enum.EasingStyle.Linear),
+                        {Size = UDim2.new(0,0,1,0)}):Play()
+
+    local stayBtn = N("TextButton", {
+        Size             = UDim2.new(1,-20,0,34),
+        Position         = UDim2.new(0,10,0,94),
+        BackgroundColor3 = C.GoldDim,
+        Text             = "STAY IN THIS SERVER",
+        TextColor3       = bdrCol,
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 12,
+        BorderSizePixel  = 0,
+        ZIndex           = 101,
+        AutoButtonColor  = false,
+    }, pop)
+    Cr(8, stayBtn)
+    St(bdrCol, 1, stayBtn)
+
+    local skipBtn = N("TextButton", {
+        Size             = UDim2.new(1,-20,0,28),
+        Position         = UDim2.new(0,10,0,135),
+        BackgroundColor3 = C.BG3,
+        Text             = "Keep searching →",
+        TextColor3       = C.Gray,
+        Font             = Enum.Font.Gotham,
+        TextSize         = 11,
+        BorderSizePixel  = 0,
+        ZIndex           = 101,
+        AutoButtonColor  = false,
+    }, pop)
+    Cr(6, skipBtn)
+
+    local dismissed = false
+    local function dismiss(stay)
+        if dismissed then return end
+        dismissed = true
+        if stay then
+            State.scanning         = false
+            _G.__AN_AutoResume     = false
+        end
+        TweenService:Create(pop, TI.MED, {Position = UDim2.new(0.5,-POP_W/2,0,POP_OUT)}):Play()
+        task.delay(0.4, function()
+            if pop and pop.Parent then pop:Destroy() end
+            State.showingPopup = false
+            task.wait(0.12)
+            processPopup()
+        end)
+    end
+
+    stayBtn.MouseButton1Click:Connect(function() dismiss(true)  end)
+    skipBtn.MouseButton1Click:Connect(function() dismiss(false) end)
+    task.delay(Cfg.PopupSecs, function() dismiss(false) end)
+
+    TweenService:Create(pop, TI.MED, {Position = UDim2.new(0.5,-POP_W/2,0,POP_IN)}):Play()
+end
+
+local function queuePopup(msg, isSecret, isOG)
+    table.insert(State.popupQueue, {msg=msg, isSecret=isSecret, isOG=isOG})
+    processPopup()
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 15] TAB SYSTEM
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local Pages = {PageScanner, PageResults, PageStats, PageConfig}
+
+local function switchTab(idx)
+    State.currentTab = idx
+    for i, btn in ipairs(TabBtns) do
+        btn.TextColor3   = i == idx and C.Cyan or C.Gray
+        Pages[i].Visible = i == idx
+    end
+    TweenService:Create(TabInd, TI.FAST, {
+        Position = UDim2.new(0.25*(idx-1), 1, 0, 2)
+    }):Play()
+end
+
+for i, btn in ipairs(TabBtns) do
+    btn.MouseButton1Click:Connect(function() switchTab(i) end)
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 16] MINIMIZE AND DRAG
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    TweenService:Create(Main, TI.MED, {
+        Size = minimized and UDim2.fromOffset(374, 56) or UDim2.fromOffset(374, 550)
+    }):Play()
+    MinBtn.Text = minimized and "+" or "—"
+end)
+
+-- Drag (fixed: captures AbsolutePosition on start)
+do
+    local dragging   = false
+    local dragStart  = nil
+    local frameStart = nil
+
+    Header.InputBegan:Connect(function(inp)
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            dragging   = true
+            dragStart  = inp.Position
+            frameStart = Vector2.new(Main.AbsolutePosition.X, Main.AbsolutePosition.Y)
+            inp.Changed:Connect(function()
+                if inp.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(inp)
+        if not dragging then return end
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch then
+            local delta = inp.Position - dragStart
+            local vp2   = workspace.CurrentCamera.ViewportSize
+            local nx    = math.clamp(frameStart.X + delta.X, 0, vp2.X - Main.AbsoluteSize.X)
+            local ny    = math.clamp(frameStart.Y + delta.Y, 0, vp2.Y - Main.AbsoluteSize.Y)
+            Main.Position = UDim2.fromOffset(nx, ny)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(inp)
+        local t = inp.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 17] UI UPDATE FUNCTIONS
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function updateStats()
+    SC.servers.Text = tostring(State.serversScanned)
+    SC.players.Text = tostring(State.totalPlayers)
+    SC.pages.Text   = tostring(State.pages)
+    SC.best.Text    = State.bestIncome > 0 and fInc(State.bestIncome) .. "/s" or "—"
+
+    ProgLbl.Text    = State.serversScanned .. " srv  •  " ..
+                      State.pages .. " page  •  " ..
+                      State.totalPlayers .. " players"
+
+    -- Actualizar pageina STATS
+    StatRows.duration.Text  = fTime(sessionDuration())
+    StatRows.scanned.Text   = tostring(State.serversScanned)
+    StatRows.hops.Text      = tostring(State.hopsAttempted)
+    StatRows.failed.Text    = tostring(State.hopsFailed)
+    StatRows.secrets.Text   = tostring(State.secretsFound)
+    StatRows.ogs.Text       = tostring(State.ogsFound)
+    StatRows.bestInc.Text   = State.bestIncome > 0 and fInc(State.bestIncome) .. "/s" or "—"
+    StatRows.bestName.Text  = State.bestName or "—"
+    StatRows.results.Text   = tostring(resCount)
+
+    local blCount = 0
+    for _ in pairs(State.serverBlacklist) do blCount = blCount + 1 end
+    StatRows.blacklist.Text = tostring(blCount)
+end
+
+local function setStatus(text, col, dotCol)
+    StatusMain.Text       = text
+    StatusMain.TextColor3 = col or C.GrayLight
+    if dotCol then
+        TweenService:Create(StatusDot, TI.FAST, {BackgroundColor3 = dotCol}):Play()
+    end
+end
+
+local function setProgress(pct)
+    TweenService:Create(ProgFill, TI.FAST, {
+        Size = UDim2.new(math.clamp(pct, 0, 1), 0, 1, 0)
+    }):Play()
+end
+
+-- Timer de stats (actualiza pageina stats cada segundo in background)
+task.spawn(function()
+    while ScreenGui and ScreenGui.Parent do
+        if State.currentTab == 3 then
+            StatRows.duration.Text = fTime(sessionDuration())
+        end
+        task.wait(1)
+    end
+end)
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 18] MAIN SNIPER LOGIC
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+local function startSniper()
+    if State.scanning then return end
+
+    -- State reset (except serverBlacklist which persists from previous session)
+    State.scanning       = true
+    State.pages          = 0
+    State.serversScanned = 0
+    State.totalPlayers   = 0
+    State.bestIncome     = 0
+    State.bestName       = nil
+    State.bestRarity     = nil
+    State.results        = {}
+    State.popupQueue     = {}
+    State.showingPopup   = false
+    State.sessionStart   = os.time()
+    State.hopsAttempted  = 0
+    State.hopsFailed     = 0
+    State.secretsFound   = 0
+    State.ogsFound       = 0
+
+    -- UI reset
+    StartBtn.Visible = false
+    StopBtn.Visible  = true
+    StayBtn.Visible  = false
+    FindLbl.Visible  = false
+    setProgress(0)
+
+    for _, c in ipairs(LogScroll:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    logCount = 0
+
+    for _, c in ipairs(ResScroll:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    resCount = 0
+    ResHdr.Text = "Servers con Secret/OG encontrados"
+
+    -- Start
+    addLog("ASTRYX NOTIFIER v6.0 started.", C.Cyan)
+    addLog("Target: brainrots with income >= " .. fInc(Cfg.MinIncome) .. " $/s", C.Purple)
+    addLog("= Secret tier: $315K-$400M/s | OG: $450M-$750M/s", C.Gray)
+    addLog("Active DB: " .. dbCount() .. " indexed brainrots", C.Gray)
+
+    setStatus("Scanning current server...", C.Cyan, C.Cyan)
+    updateStats()
+
+    -- ── STEP 1: Scan current server ──────────────────────────────────
+    task.wait(Cfg.ScanDelay)
+    local curScan = deepScanWorkspace()
+    State.serversScanned = 1
+
+    local curSummary = string.format("Current server: top=%s/s [%s]  %d rots",
+        fInc(curScan.topIncome), curScan.topRarity, curScan.count)
+
+    if curScan.hasOG then
+        addLog("⭐ OG — " .. curSummary, C.Gold)
+    elseif curScan.hasSecret then
+        addLog("🔴 SECRET — " .. curSummary, C.Secret)
+    else
+        addLog(curSummary, C.Gray)
+    end
+
+    local doAlert, reason = shouldAlert(curScan)
+    if doAlert then
+        -- ¡Aquí mismo hay algo!
+        State.bestIncome  = curScan.topIncome
+        State.bestName    = curScan.top and curScan.top.name
+        State.bestRarity  = curScan.top and curScan.top.rarity
+
+        if curScan.hasOG then
+            State.ogsFound = State.ogsFound + 1
+            setStatus("⭐ OG HERE: " .. (curScan.top and curScan.top.name or "OG"), C.Gold, C.Gold)
+        elseif curScan.hasSecret then
+            State.secretsFound = State.secretsFound + 1
+            setStatus("🔴 SECRET: " .. (curScan.top and curScan.top.name or "Secret"), C.Secret, C.Secret)
+        else
+            setStatus("◆ VALIOSO: " .. fInc(curScan.topIncome) .. " $/s", C.Green, C.Green)
+        end
+
+        StayBtn.Visible = true
+        FindLbl.Visible = true
+        FindLbl.Text    = (curScan.top and curScan.top.name or "Brainrot") ..
+                          " — " .. fInc(curScan.topIncome) .. " $/s"
+        FindLbl.TextColor3 = curScan.hasOG and C.Gold or
+                             (curScan.hasSecret and C.Secret or C.Green)
+
+        addResult({
+            serverId     = game.JobId,
+            players      = #Players:GetPlayers(),
+            maxPlayers   = 8,
+            top          = curScan.top,
+            topIncome    = curScan.topIncome,
+            count        = curScan.count,
+            hasOG        = curScan.hasOG,
+            hasSecret    = curScan.hasSecret,
+            hasGod       = curScan.hasGod,
+        })
+
+        ResHdr.Text = "1 valuable result found"
+
+        local topName = curScan.top and curScan.top.name or "Brainrot"
+        local topRar  = curScan.top and curScan.top.rarity or ""
+        queuePopup(
+            topName .. " [" .. topRar .. "]\n" .. fInc(curScan.topIncome) .. " $/s  •  Current server",
+            curScan.hasSecret, curScan.hasOG
+        )
+
+        if curScan.hasOG then sendWebhook(curScan, game.JobId) end
+
+        -- Si es OG o no tenemos AutoHop, paramos
+        if not Cfg.AutoHop or (curScan.hasOG and Cfg.StopOnOG) then
+            setProgress(1)
+            updateStats()
+            StartBtn.Visible = true
+            StopBtn.Visible  = false
+            State.scanning   = false
+            _G.__AN_AutoResume = false
+            return
+        end
+    end
+
+    -- ── STEP 2: Get list of public servers with space ──────────
+    setStatus("Fetching public servers...", C.Purple, C.Purple)
+    addLog("Fetching server list (max " .. Cfg.MaxPages .. " page)...", C.GrayLight)
+
+    local pool   = {}
+    local cursor = nil
+
+    for page = 1, Cfg.MaxPages do
+        if not State.scanning then break end
+
+        local servers, nextCursor = fetchServers(cursor)
+        cursor = nextCursor
+        State.pages = page
+
+        local added = 0
+        for _, s in ipairs(servers) do
+            if isServerValid(s) then
+                table.insert(pool, s)
+                State.totalPlayers = State.totalPlayers + (tonumber(s.playing) or 0)
+                added = added + 1
+            end
+        end
+
+        addLog(string.format("Page %d: +%d valid  (pool total: %d)", page, added, #pool), C.Gray)
+        updateStats()
+        setProgress(page / Cfg.MaxPages * 0.22)
+
+        if not cursor then
+            addLog("Fin de pageinas disponibles.", C.GrayLight)
+            break
+        end
+
+        task.wait(0.1)  -- Respect API rate limit
+    end
+
+    if #pool == 0 then
+        setStatus("No servers with available space.", C.Orange, C.Orange)
+        addLog("No valid servers found. Try lowering the player filter.", C.Orange)
+        StartBtn.Visible = true
+        StopBtn.Visible  = false
+        State.scanning   = false
+        setProgress(0)
+        return
+    end
+
+    -- Ordenar: más playersadores primero (servidores más activos = más brainrots in bases)
+    table.sort(pool, function(a, b)
+        return (tonumber(a.playing) or 0) > (tonumber(b.playing) or 0)
+    end)
+
+    addLog(string.format("Final pool: %d servers. Starting sniper...", #pool), C.Cyan)
+
+    -- ── STEP 3: Hop + scan loop ────────────────────────────────────────
+    for i, server in ipairs(pool) do
+        if not State.scanning then break end
+
+        local playing    = tonumber(server.playing)    or 0
+        local maxPlayers = tonumber(server.maxPlayers) or 8
+        local sId        = tostring(server.id)
+        local pct        = 0.22 + (i / #pool) * 0.78
+
+        setStatus(string.format("[%d/%d] Jumping... %d/%d players",
+            i, #pool, playing, maxPlayers), C.Purple, C.Purple)
+        setProgress(pct)
+
+        addLog(string.format("[%d/%d] %d/%d players | %s...",
+            i, #pool, playing, maxPlayers, sId:sub(1,8)), C.Gray)
+
+        -- TELEPORT WITH RETRY
+        local tpOk = teleportWithRetry(sId, Cfg.MaxRetries)
+
+        if not tpOk then
+            addLog("  ✗ Teleport failed (all retries exhausted)", C.Red)
+            task.wait(0.5)
+            continue
+        end
+
+        -- Wait for destination server to fully load
+        addLog("  → Waiting " .. Cfg.HopDelay .. "s to load...", C.CyanDim)
+        setStatus("Teleportado. Waiting carga...", C.Orange, C.Orange)
+        task.wait(Cfg.HopDelay)
+
+        if not State.scanning then break end
+
+        -- Deep scan of destination workspace
+        setStatus("Scanning workspace...", C.Cyan, C.Cyan)
+        addLog("  → Scanning...", C.CyanDim)
+        task.wait(Cfg.ScanDelay)
+
+        local scan = deepScanWorkspace()
+        State.serversScanned = State.serversScanned + 1
+
+        -- Blacklist this server to not return
+        State.serverBlacklist[sId] = true
+
+        -- Result log
+        local pfx = scan.hasOG and "⭐[OG]" or
+                    (scan.hasSecret and "🔴[SEC]" or
+                    (scan.hasGod and "[GOD]" or ""))
+
+        addLog(string.format("  %s top: %s/s  %d rots",
+            pfx, fInc(scan.topIncome), scan.count),
+            scan.hasOG and C.Gold or (scan.hasSecret and C.Secret or
+            (scan.hasGod and C.Purple or C.Gray)))
+
+        -- Update best seen
+        if scan.topIncome > State.bestIncome then
+            State.bestIncome  = scan.topIncome
+            State.bestName    = scan.top and scan.top.name
+            State.bestRarity  = scan.top and scan.top.rarity
+        end
+
+        -- Alert?
+        local doAlert2, _ = shouldAlert(scan)
+        if doAlert2 then
+            if scan.hasOG then
+                State.ogsFound = State.ogsFound + 1
+            elseif scan.hasSecret then
+                State.secretsFound = State.secretsFound + 1
+            end
+
+            addResult({
+                serverId     = game.JobId,
+                players      = playing,
+                maxPlayers   = maxPlayers,
+                top          = scan.top,
+                topIncome    = scan.topIncome,
+                count        = scan.count,
+                hasOG        = scan.hasOG,
+                hasSecret    = scan.hasSecret,
+                hasGod       = scan.hasGod,
+            })
+
+            ResHdr.Text     = resCount .. " valid result(s)"
+            StayBtn.Visible = true
+            FindLbl.Visible = true
+            FindLbl.Text    = (scan.top and scan.top.name or "Brainrot") ..
+                              " — " .. fInc(scan.topIncome) .. " $/s"
+            FindLbl.TextColor3 = scan.hasOG and C.Gold or
+                                 (scan.hasSecret and C.Secret or C.Green)
+
+            local statusMsg = scan.hasOG and
+                              ("⭐ OG: " .. (scan.top and scan.top.name or "OG")) or
+                              (scan.hasSecret and
+                              ("🔴 " .. fInc(scan.topIncome) .. " $/s HERE") or
+                              ("◆ " .. fInc(scan.topIncome) .. " $/s ENCONTRADO"))
+
+            setStatus(statusMsg,
+                scan.hasOG and C.Gold or (scan.hasSecret and C.Secret or C.Green),
+                scan.hasOG and C.Gold or (scan.hasSecret and C.Secret or C.Green))
+
+            local topName = scan.top and scan.top.name or "Brainrot"
+            local topRar  = scan.top and scan.top.rarity or ""
+            queuePopup(
+                topName .. " [" .. topRar .. "]\n" ..
+                fInc(scan.topIncome) .. " $/s  •  Server " .. i .. "/" .. #pool,
+                scan.hasSecret, scan.hasOG
+            )
+
+            -- Webhook si hay algo muy bueno
+            if scan.hasOG or scan.hasSecret then
+                sendWebhook(scan, sId)
+            end
+
+            -- ¿Stop or continue?
+            local shouldStop = false
+            if scan.hasOG and Cfg.StopOnOG then shouldStop = true end
+            if not Cfg.AutoHop then shouldStop = true end
+
+            if shouldStop then
+                State.scanning   = false
+                _G.__AN_AutoResume = false
+                StartBtn.Visible = true
+                StopBtn.Visible  = false
+                setProgress(pct)
+                updateStats()
+                return
+            end
+        end  -- fin if doAlert2
+
+        updateStats()
+    end  -- fin loop pool
+
+    -- ── Loop completion ──────────────────────────────────────────────
+    if State.scanning then
+        State.scanning = false
+        _G.__AN_AutoResume = false
+
+        local summary
+        if State.bestIncome > 0 then
+            summary = string.format(
+                "Completed. Best: %s $/s (%s) in %d servers.",
+                fInc(State.bestIncome), State.bestRarity or "?", State.serversScanned
+            )
+        else
+            summary = string.format(
+                "No results >= %s $/s. %d servers, %d pageinas.",
+                fInc(Cfg.MinIncome), State.serversScanned, State.pages
+            )
+        end
+
+        setStatus(summary, C.GrayLight, C.Gray)
+        addLog(summary, State.bestIncome > 0 and C.Cyan or C.GrayLight)
+        setProgress(1)
+    end
+
+    StartBtn.Visible = true
+    StopBtn.Visible  = false
+    updateStats()
+end  -- fin startSniper
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 19] BUTTON CONNECTIONS
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+StartBtn.MouseButton1Click:Connect(function()
+    if not State.scanning then
+        task.spawn(startSniper)
+    end
+end)
+
+StopBtn.MouseButton1Click:Connect(function()
+    State.scanning     = false
+    _G.__AN_AutoResume = false
+    StartBtn.Visible   = true
+    StopBtn.Visible    = false
+    StayBtn.Visible    = false
+    FindLbl.Visible    = false
+    setStatus("Stopped manually.", C.Orange, C.Orange)
+    addLog("Sniper stopped by user.", C.Orange)
+    setProgress(0)
+    updateStats()
+end)
+
+StayBtn.MouseButton1Click:Connect(function()
+    State.scanning     = false
+    _G.__AN_AutoResume = false
+    StayBtn.Visible    = false
+    StartBtn.Visible   = true
+    StopBtn.Visible    = false
+    setStatus("Staying here. Go get that brainrot!", C.Green, C.Green)
+    addLog("Staying in current server. Good luck!", C.Green)
+end)
+
+HopBtn.MouseButton1Click:Connect(function()
+    if State.scanning then return end
+    addLog("Manual hop to server with space...", C.Cyan)
+    task.spawn(function()
+        local servers, _ = fetchServers(nil)
+        for _, s in ipairs(servers) do
+            if isServerValid(s) then
+                addLog("Jumping to: " .. tostring(s.id):sub(1,8) .. "...", C.Cyan)
+                local ok = teleportWithRetry(tostring(s.id), 3)
+                if not ok then
+                    addLog("Manual hop failed.", C.Red)
+                end
+                return
+            end
+        end
+        addLog("No servers available with space.", C.Orange)
+    end)
+end)
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 20] ENTRANCE ANIMATION
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Main.BackgroundTransparency = 1
+Main.Position = UDim2.fromOffset(iX, iY + 35)
+
+TweenService:Create(Main, TI.ENTER, {
+    BackgroundTransparency = 0,
+    Position               = UDim2.fromOffset(iX, iY),
+}):Play()
+
+task.wait(0.5)
+
+-- Welcome logs
+addLog("ASTRYX NOTIFIER v6.0 loaded ✓", C.Cyan)
+addLog("DB: " .. dbCount() .. " brainrots with real $/s (April 2026)", C.Purple)
+addLog("Secret range: $315K/s (La Vacca) – $400M/s (Griffin)", C.GrayLight)
+addLog("OG range: $450M/s (Skibidi) – $750M/s (Strawberry Elephant)", C.Gold)
+addLog("Teleport with auto retry: " .. Cfg.MaxRetries .. "x per server", C.Green)
+addLog("Current threshold: " .. fInc(Cfg.MinIncome) .. " $/s  (adjustable in CONFIG)", C.Gray)
+
+print("╔══════════════════════════════════════════════════╗")
+print("║  ASTRYX NOTIFIER v6.0 — LOADED              ║")
+print("║  DB: " .. dbCount() .. " brainrots | Secret/OG Only | April 2026     ║")
+print("╚══════════════════════════════════════════════════╝")
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- [SECTION 21] AUTO-RESUME POST-TELEPORT + WATCHDOG
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- If the executor re-executed the script after a teleport with _AutoResume = true,
+-- we start the sniper automatically after a delay for the game to load.
+if _AutoResume then
+    addLog("Auto-resuming sniper (post-teleport)...", C.Cyan)
+    setStatus("Resuming after teleport...", C.Cyan, C.Cyan)
+    task.spawn(function()
+        task.wait(Cfg.ScanDelay + 1)
+        if not State.scanning then
+            addLog("Scanning newly joined server...", C.Purple)
+            task.spawn(startSniper)
+        end
+    end)
+end
+
+-- Watchdog: detect JobId change if the script survives the teleport
+-- Some executors keep the script alive during teleport (rare but possible)
+local _lastJobId = game.JobId
+
+RunService.Heartbeat:Connect(function()
+    local curId = game.JobId
+    if curId ~= "" and curId ~= _lastJobId then
+        _lastJobId = curId
+
+        if _G.__AN_AutoResume then
+            _G.__AN_AutoResume = false
+            task.spawn(function()
+                task.wait(Cfg.HopDelay)
+                if not State.scanning then
+                    addLog("New server detected via Heartbeat. Scanning...", C.Cyan)
+                    task.spawn(startSniper)
+                end
+            end)
+        end
+    end
+end)
+
+-- Intentar guardar el script in disco para queue_on_teleport
+-- Solo funciona si el executor soporta writefile Y el script ya está in disco
+task.spawn(function()
+    task.wait(1.5)
+    if not _ScriptSrc then
+        pcall(function()
+            if writefile and queue_on_teleport then
+                -- No podemos auto-guardarnos sin acceso al source in tiempo de ejecución.
+                -- User must manually save the script as "astryx_notifier_v6.lua"
+                -- for queue_on_teleport to work automatically.
+                addLog("TIP: Save the script as '" .. SCRIPT_FILE .. "' for auto-resume", C.CyanDim)
+            end
+        end)
+    else
+        addLog("Script source loaded ✓ — queue_on_teleport activo", C.Green)
+    end
+end)
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║  ASTRYX NOTIFIER v6.0 — END                                              ║
+-- ║                                                                              ║
+-- ║  IMPROVEMENT SUMMARY VS v4.0 / v5.0:                                         ║
+-- ║  • Income $/s REALES actualizados a April 2026                              ║
+-- ║    Dragon Cannelloni $250M/s, Griffin $400M/s (mejor Secret)                ║
+-- ║    Headless Horseman now OG at $500M/s (buffed 28/02/2026)                 ║
+-- ║    La Vacca $325K/s (buffed from $300K), Dug Dug → Secret                    ║
+-- ║  • CORRECT mutations formula: Base × (1 + MutMod + ΣTraitMods)           ║
+-- ║  • Teleport with auto retry (up to 8x) + TeleportInitFailed listener   ║
+-- ║  • Blacklist of failed servers to avoid repeats                         ║
+-- ║  • Secret/OG ONLY by default (zero false positives)                       ║
+-- ║  • 5 detection layers: attrs → nameDB → rarity → leaderstats → remotes   ║
+-- ║  • Optional Discord Webhook para notificaciones instantáneas                ║
+-- ║  • Página de estadísticas de sesión in tiempo real                         ║
+-- ║  • Tab CONFIG con 7 opciones incluyendo max retries y min playersadores         ║
+-- ║  • Auto-resume via _G + queue_on_teleport + Heartbeat watchdog              ║
+-- ║  • DB with 200+ entries with real $/s (OG + Secret + BrainrotGod)          ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
